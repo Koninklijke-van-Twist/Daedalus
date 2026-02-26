@@ -74,19 +74,60 @@ $odataTtl = [
 ];
 
 $userEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+if ($userEmail === '') {
+    $userEmail = 'ict@kvt.nl';
+}
 $selectedWorkOrderNo = trim((string) ($_GET['workorder'] ?? ''));
 $selectedPersonNoRequest = trim((string) ($_GET['person'] ?? ''));
 $searchQuery = trim((string) ($_GET['q'] ?? ''));
-$selectedStatusRequest = trim((string) ($_GET['status'] ?? ''));
-$includeExecutedRequest = trim((string) ($_GET['include_executed'] ?? ''));
+$statusFiltersRequest = trim((string) ($_GET['status_filters'] ?? ''));
 $dateFromRequest = trim((string) ($_GET['date_from'] ?? ''));
 $dateToRequest = trim((string) ($_GET['date_to'] ?? ''));
 $ajaxAction = trim((string) ($_GET['ajax'] ?? ''));
-$hasIncludeExecutedRequest = array_key_exists('include_executed', $_GET);
+$hasStatusFiltersRequest = array_key_exists('status_filters', $_GET);
 
 function user_pref_path(): string
 {
     return __DIR__ . '/cache/user-company-preferences.json';
+}
+
+function status_catalog_path(): string
+{
+    return __DIR__ . '/cache/statuses.json';
+}
+
+function user_status_filters_path(string $email): string
+{
+    $safeEmail = str_replace(["\\", '/', "\0"], '_', strtolower(trim($email)));
+    return __DIR__ . '/cache/users/' . $safeEmail . '.json';
+}
+
+function read_json_assoc_file(string $path): array
+{
+    if (!is_file($path)) {
+        return [];
+    }
+
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || trim($raw) === '') {
+        return [];
+    }
+
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function write_json_assoc_file(string $path, array $data): void
+{
+    $dir = dirname($path);
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0777, true);
+    }
+
+    $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    if (is_string($json)) {
+        @file_put_contents($path, $json, LOCK_EX);
+    }
 }
 
 function read_user_company_preferences(): array
@@ -372,6 +413,100 @@ function is_executed_workorder_status(string $status): bool
     return strtolower(trim($status)) === 'uitgevoerd';
 }
 
+function status_enabled_default(string $status): bool
+{
+    return !is_executed_workorder_status($status);
+}
+
+function normalize_status_filter_map(array $input): array
+{
+    $result = [];
+    foreach ($input as $status => $enabled) {
+        $statusText = trim((string) $status);
+        if ($statusText === '') {
+            continue;
+        }
+        $result[$statusText] = (bool) $enabled;
+    }
+
+    return $result;
+}
+
+function read_status_catalog(): array
+{
+    $raw = read_json_assoc_file(status_catalog_path());
+    $statuses = [];
+
+    foreach ($raw as $key => $value) {
+        if (is_string($key) && trim($key) !== '' && (is_bool($value) || is_numeric($value))) {
+            $statuses[trim($key)] = true;
+            continue;
+        }
+
+        $status = trim((string) $value);
+        if ($status !== '') {
+            $statuses[$status] = true;
+        }
+    }
+
+    $result = array_keys($statuses);
+    sort($result, SORT_NATURAL | SORT_FLAG_CASE);
+    return $result;
+}
+
+function write_status_catalog(array $statuses): void
+{
+    $normalized = [];
+    foreach ($statuses as $status) {
+        $value = trim((string) $status);
+        if ($value !== '') {
+            $normalized[$value] = true;
+        }
+    }
+
+    $result = array_keys($normalized);
+    sort($result, SORT_NATURAL | SORT_FLAG_CASE);
+    write_json_assoc_file(status_catalog_path(), array_values($result));
+}
+
+function ensure_user_status_filters(string $email, array $catalogStatuses): array
+{
+    if ($email === '') {
+        $defaults = [];
+        foreach ($catalogStatuses as $status) {
+            $defaults[$status] = status_enabled_default($status);
+        }
+        return $defaults;
+    }
+
+    $path = user_status_filters_path($email);
+    $existing = normalize_status_filter_map(read_json_assoc_file($path));
+    $changed = false;
+
+    foreach ($catalogStatuses as $status) {
+        if (!array_key_exists($status, $existing)) {
+            $existing[$status] = status_enabled_default($status);
+            $changed = true;
+        }
+    }
+
+    if ($changed || !is_file($path)) {
+        write_json_assoc_file($path, $existing);
+    }
+
+    return $existing;
+}
+
+function decode_status_filters_request(string $payload): array
+{
+    if ($payload === '') {
+        return [];
+    }
+
+    $decoded = json_decode($payload, true);
+    return is_array($decoded) ? normalize_status_filter_map($decoded) : [];
+}
+
 function fetch_workorder_open_counts(string $environment, string $company, array $resourceNos, array $auth): array
 {
     $result = [];
@@ -561,12 +696,9 @@ $planningLines = [];
 $availableWorkorderStatuses = [];
 $workOrderStatusCounts = [];
 $allWorkOrdersCount = 0;
-$selectedStatus = $selectedStatusRequest;
-$includeExecuted = $includeExecutedRequest !== '' && $includeExecutedRequest !== '0';
-
-if (is_executed_workorder_status($selectedStatus)) {
-    $includeExecuted = true;
-}
+$statusCatalog = read_status_catalog();
+$submittedStatusFilters = decode_status_filters_request($statusFiltersRequest);
+$userStatusFilters = ensure_user_status_filters($userEmail, $statusCatalog);
 
 $today = new DateTimeImmutable('today');
 $defaultRangeStart = $today->modify('-7 days');
@@ -728,21 +860,52 @@ try {
         $availableWorkorderStatuses = array_keys($statusMap);
         sort($availableWorkorderStatuses, SORT_NATURAL | SORT_FLAG_CASE);
 
-        if ($selectedStatus !== '' && !in_array($selectedStatus, $availableWorkorderStatuses, true)) {
-            $selectedStatus = '';
+        $statusCatalogMap = [];
+        foreach ($statusCatalog as $statusValue) {
+            $statusCatalogMap[$statusValue] = true;
         }
 
-        if ($selectedStatus !== '') {
-            $workOrders = array_values(array_filter(
-                $workOrders,
-                static fn(array $workOrder): bool => trim((string) ($workOrder['Status'] ?? '')) === $selectedStatus
-            ));
-        } elseif (!$includeExecuted) {
-            $workOrders = array_values(array_filter(
-                $workOrders,
-                static fn(array $workOrder): bool => !is_executed_workorder_status((string) ($workOrder['Status'] ?? ''))
-            ));
+        $catalogChanged = false;
+        foreach ($availableWorkorderStatuses as $statusValue) {
+            if (!isset($statusCatalogMap[$statusValue])) {
+                $statusCatalogMap[$statusValue] = true;
+                $catalogChanged = true;
+            }
         }
+
+        if ($catalogChanged) {
+            $statusCatalog = array_keys($statusCatalogMap);
+            sort($statusCatalog, SORT_NATURAL | SORT_FLAG_CASE);
+            write_status_catalog($statusCatalog);
+        }
+
+        $userStatusFilters = ensure_user_status_filters($userEmail, $statusCatalog);
+
+        if ($hasStatusFiltersRequest && $statusFiltersRequest !== '') {
+            foreach ($availableWorkorderStatuses as $statusValue) {
+                $userStatusFilters[$statusValue] = isset($submittedStatusFilters[$statusValue])
+                    ? (bool) $submittedStatusFilters[$statusValue]
+                    : false;
+            }
+
+            write_json_assoc_file(user_status_filters_path($userEmail), $userStatusFilters);
+        }
+
+        $workOrders = array_values(array_filter(
+            $workOrders,
+            static function (array $workOrder) use ($userStatusFilters): bool {
+                $status = trim((string) ($workOrder['Status'] ?? ''));
+                if ($status === '') {
+                    return true;
+                }
+
+                if (array_key_exists($status, $userStatusFilters)) {
+                    return (bool) $userStatusFilters[$status];
+                }
+
+                return status_enabled_default($status);
+            }
+        ));
 
         if ($searchQuery !== '') {
             $workOrders = array_values(array_filter(
@@ -799,8 +962,6 @@ $listQuery = [
     'date_from' => $dateFromValue,
     'date_to' => $dateToValue,
     'q' => $searchQuery,
-    'status' => $selectedStatus,
-    'include_executed' => $includeExecuted ? '1' : '',
 ];
 $listQuery = array_filter($listQuery, static function ($value): bool {
     return trim((string) $value) !== '';
@@ -810,6 +971,18 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
     'ajax' => 'resource_counts',
     'company' => $company,
 ], '', '&', PHP_QUERY_RFC3986);
+
+$statusFiltersForModal = [];
+foreach ($availableWorkorderStatuses as $statusValue) {
+    $statusFiltersForModal[$statusValue] = array_key_exists($statusValue, $userStatusFilters)
+        ? (bool) $userStatusFilters[$statusValue]
+        : status_enabled_default($statusValue);
+}
+
+$statusFiltersPayloadValue = json_encode($statusFiltersForModal, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+if (!is_string($statusFiltersPayloadValue)) {
+    $statusFiltersPayloadValue = '{}';
+}
 
 ?>
 
@@ -1055,6 +1228,7 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
             justify-content: flex-end;
             align-items: flex-end;
             gap: 8px;
+            flex-wrap: wrap;
         }
 
         .toolbar .actions .field {
@@ -1062,27 +1236,8 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
             margin: 0;
         }
 
-        .toolbar .actions .include-executed-field {
-            min-width: auto;
+        .toolbar .actions .status-filter-trigger {
             margin-right: auto;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .toolbar .actions .include-executed-field[hidden] {
-            display: none;
-        }
-
-        .toolbar .actions .include-executed-field input {
-            width: auto;
-            margin: 0;
-        }
-
-        .toolbar .actions .include-executed-field label {
-            margin: 0;
-            font-size: .86rem;
-            color: var(--text);
         }
 
         .range-row {
@@ -1099,6 +1254,79 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
             padding: 9px 12px;
             font-size: .9rem;
             font-weight: 600;
+        }
+
+        .status-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 4200;
+            display: grid;
+            place-items: center;
+            padding: 14px;
+        }
+
+        .status-modal[hidden] {
+            display: none;
+        }
+
+        .status-modal-backdrop {
+            position: absolute;
+            inset: 0;
+            background: rgba(21, 34, 51, 0.46);
+        }
+
+        .status-modal-card {
+            position: relative;
+            z-index: 1;
+            width: min(100%, 460px);
+            max-height: min(82vh, 700px);
+            overflow: auto;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px;
+        }
+
+        .status-modal-title {
+            margin: 0 0 4px;
+            font-size: 1rem;
+        }
+
+        .status-modal-subtitle {
+            margin: 0 0 10px;
+            color: var(--muted);
+            font-size: .85rem;
+        }
+
+        .status-modal-list {
+            display: grid;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .status-filter-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: .92rem;
+            color: var(--text);
+        }
+
+        .status-filter-item input {
+            width: auto;
+            margin: 0;
+        }
+
+        .status-modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
+        .status-modal-actions .secondary {
+            border-color: var(--border);
+            background: #fff;
+            color: var(--text);
         }
 
         .page-loader {
@@ -1392,28 +1620,43 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
                     placeholder="Bijv. WO-123 of onderhoud" />
             </div>
             <div class="actions">
-                <div id="include-executed-wrap" class="include-executed-field" <?= $selectedStatus === '' ? '' : 'hidden' ?>>
-                    <input type="hidden" name="include_executed" value="0" />
-                    <input id="include_executed" name="include_executed" type="checkbox" value="1"
-                        data-server-state="<?= $hasIncludeExecutedRequest ? '1' : '0' ?>"
-                        <?= $includeExecuted ? 'checked' : '' ?> />
-                    <label for="include_executed">Incl. reeds uitgevoerd</label>
-                </div>
-                <div class="field">
-                    <label for="status">Status</label>
-                    <select id="status" name="status">
-                        <option value="" <?= $selectedStatus === '' ? 'selected' : '' ?>>Alles (<?= $allWorkOrdersCount ?>)</option>
-                        <?php foreach ($availableWorkorderStatuses as $statusOption): ?>
-                            <?php $statusCount = (int) ($workOrderStatusCounts[$statusOption] ?? 0); ?>
-                            <option value="<?= htmlspecialchars($statusOption) ?>" <?= $statusOption === $selectedStatus ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($statusOption . ' (' . $statusCount . ')') ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
+                <button id="open-status-filter" class="status-filter-trigger" type="button">Statusfilter</button>
+                <input id="status_filters" name="status_filters" type="hidden"
+                    value="<?= htmlspecialchars($statusFiltersPayloadValue) ?>" />
                 <button type="submit">Toepassen</button>
             </div>
         </form>
+
+        <div id="status-filter-modal" class="status-modal" hidden>
+            <div class="status-modal-backdrop" data-status-close></div>
+            <div class="status-modal-card" role="dialog" aria-modal="true" aria-labelledby="status-modal-title">
+                <h2 id="status-modal-title" class="status-modal-title">Statusfilter</h2>
+                <p class="status-modal-subtitle">Toon alleen werkorders met deze statussen.</p>
+                <div class="status-modal-list">
+                    <?php if (count($availableWorkorderStatuses) === 0): ?>
+                        <div class="empty">Geen statussen beschikbaar.</div>
+                    <?php else: ?>
+                        <?php foreach ($availableWorkorderStatuses as $statusOption): ?>
+                            <?php
+                            $statusCount = (int) ($workOrderStatusCounts[$statusOption] ?? 0);
+                            $statusEnabled = array_key_exists($statusOption, $statusFiltersForModal)
+                                ? (bool) $statusFiltersForModal[$statusOption]
+                                : status_enabled_default($statusOption);
+                            ?>
+                            <label class="status-filter-item">
+                                <input type="checkbox" class="status-filter-checkbox"
+                                    data-status="<?= htmlspecialchars($statusOption) ?>" <?= $statusEnabled ? 'checked' : '' ?> />
+                                <span><?= htmlspecialchars($statusOption . ' (' . $statusCount . ')') ?></span>
+                            </label>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </div>
+                <div class="status-modal-actions">
+                    <button type="button" class="secondary" data-status-close>Annuleren</button>
+                    <button id="save-status-filter" type="button">Opslaan</button>
+                </div>
+            </div>
+        </div>
 
         <?php if ($errorMessage !== ''): ?>
             <div class="alert">Fout bij laden van Business Central data: <?= htmlspecialchars($errorMessage) ?></div>
@@ -1800,79 +2043,83 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
             }
 
             const personSelectEl = document.getElementById('person');
-            const statusSelectEl = document.getElementById('status');
-            const includeExecutedWrapEl = document.getElementById('include-executed-wrap');
-            const includeExecutedCheckboxEl = document.getElementById('include_executed');
-            const includeExecutedStorageKey = 'daedalus.includeExecuted';
+            const statusModalEl = document.getElementById('status-filter-modal');
+            const openStatusFilterEl = document.getElementById('open-status-filter');
+            const saveStatusFilterEl = document.getElementById('save-status-filter');
+            const statusFiltersInputEl = document.getElementById('status_filters');
+            const statusFilterCheckboxEls = Array.from(document.querySelectorAll('.status-filter-checkbox'));
+            const statusCloseEls = Array.from(document.querySelectorAll('[data-status-close]'));
 
-            function readSavedIncludeExecuted()
+            function closeStatusModal()
             {
-                try
-                {
-                    return window.localStorage.getItem(includeExecutedStorageKey) === '1';
-                }
-                catch (error)
-                {
-                    return false;
-                }
-            }
-
-            function saveIncludeExecuted(isChecked)
-            {
-                try
-                {
-                    window.localStorage.setItem(includeExecutedStorageKey, isChecked ? '1' : '0');
-                }
-                catch (error)
-                {
-                }
-            }
-
-            function syncIncludeExecutedVisibility()
-            {
-                if (!statusSelectEl || !includeExecutedWrapEl || !includeExecutedCheckboxEl)
+                if (!statusModalEl)
                 {
                     return;
                 }
-
-                const currentStatus = (statusSelectEl.value || '').trim().toLowerCase();
-                const isAll = currentStatus === '';
-                const isExecuted = currentStatus === 'uitgevoerd';
-
-                if (isExecuted)
-                {
-                    includeExecutedCheckboxEl.checked = true;
-                    saveIncludeExecuted(true);
-                }
-
-                if (isAll)
-                {
-                    includeExecutedWrapEl.hidden = false;
-                }
-                else
-                {
-                    includeExecutedWrapEl.hidden = true;
-                }
+                statusModalEl.hidden = true;
             }
 
-            if (includeExecutedCheckboxEl)
+            function openStatusModal()
             {
-                const hasServerState = (includeExecutedCheckboxEl.getAttribute('data-server-state') || '') === '1';
-                if (!hasServerState)
+                if (!statusModalEl)
                 {
-                    includeExecutedCheckboxEl.checked = readSavedIncludeExecuted();
+                    return;
                 }
+                statusModalEl.hidden = false;
+            }
 
-                includeExecutedCheckboxEl.addEventListener('change', function ()
+            if (openStatusFilterEl)
+            {
+                openStatusFilterEl.addEventListener('click', function ()
                 {
-                    saveIncludeExecuted(includeExecutedCheckboxEl.checked);
+                    openStatusModal();
                 });
             }
 
-            if (statusSelectEl)
+            statusCloseEls.forEach(function (closeEl)
             {
-                statusSelectEl.addEventListener('change', syncIncludeExecutedVisibility);
-                syncIncludeExecutedVisibility();
+                closeEl.addEventListener('click', function ()
+                {
+                    closeStatusModal();
+                });
+            });
+
+            document.addEventListener('keydown', function (event)
+            {
+                if (event.key === 'Escape' && statusModalEl && !statusModalEl.hidden)
+                {
+                    closeStatusModal();
+                }
+            });
+
+            if (saveStatusFilterEl)
+            {
+                saveStatusFilterEl.addEventListener('click', function ()
+                {
+                    const payload = {};
+                    statusFilterCheckboxEls.forEach(function (checkboxEl)
+                    {
+                        const status = (checkboxEl.getAttribute('data-status') || '').trim();
+                        if (status === '')
+                        {
+                            return;
+                        }
+                        payload[status] = checkboxEl.checked;
+                    });
+
+                    if (statusFiltersInputEl)
+                    {
+                        statusFiltersInputEl.value = JSON.stringify(payload);
+                    }
+
+                    closeStatusModal();
+
+                    if (openStatusFilterEl && openStatusFilterEl.form)
+                    {
+                        showLoader();
+                        openStatusFilterEl.form.requestSubmit();
+                    }
+                });
             }
 
             if (personSelectEl)
