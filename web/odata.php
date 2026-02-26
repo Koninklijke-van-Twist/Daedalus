@@ -1,7 +1,23 @@
 <?php
 
+function consolelog($text)
+{
+    static $enabled = null;
+    if ($enabled === null) {
+        $flag = getenv('KVT_DEBUG_ODATA');
+        $enabled = is_string($flag) && in_array(strtolower(trim($flag)), ['1', 'true', 'yes', 'on'], true);
+    }
+
+    if (!$enabled) {
+        return;
+    }
+
+    file_put_contents('php://stdout', $text);
+}
+
 function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
 {
+    consolelog("Fetching $url\n");
     $ttlSeconds = max(1, (int) $ttlSeconds);
     maybe_cleanup_expired_cache_files();
 
@@ -9,12 +25,16 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
     $cachePath = cache_path_for_key($cacheKey);
 
     if (is_file($cachePath)) {
+
+        consolelog("Found in cache.\n");
         $cached = read_cache_payload($cachePath, $ttlSeconds);
         if ($cached['valid']) {
+            consolelog("Returning data.\n");
             return $cached['data'];
         }
 
         if ($cached['delete']) {
+            consolelog("Cache expired.\n");
             @unlink($cachePath);
         }
     }
@@ -31,20 +51,26 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
 
         $all = array_merge($all, $resp['value']);
         $next = $resp['@odata.nextLink'] ?? null;
+        consolelog("Reading next chunk...\n");
     }
 
+    consolelog("Fetched. Now caching...\n");
     write_cache_json($cachePath, $all, $ttlSeconds, $url);
+    consolelog("Done, returning data.\n");
     return $all;
 }
 
 function odata_get_json(string $url, array $auth): array
 {
     $ch = curl_init($url);
+    $userAgent = 'KVT-ODataClient/1.0 (Windows; nl-NL)';
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_USERAGENT => $userAgent,
         CURLOPT_HTTPHEADER => [
             "Accept: application/json",
+            "Accept-Language: nl-NL,nl;q=0.9,en;q=0.8",
         ],
     ]);
 
@@ -107,7 +133,7 @@ function maybe_cleanup_expired_cache_files(): void
 {
     $markerPath = cache_cleanup_marker_path();
     $now = time();
-    $intervalSeconds = 60;
+    $intervalSeconds = 300;
 
     if (is_file($markerPath)) {
         $lastRun = (int) @file_get_contents($markerPath);
