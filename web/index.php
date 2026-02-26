@@ -78,9 +78,11 @@ $selectedWorkOrderNo = trim((string) ($_GET['workorder'] ?? ''));
 $selectedPersonNoRequest = trim((string) ($_GET['person'] ?? ''));
 $searchQuery = trim((string) ($_GET['q'] ?? ''));
 $selectedStatusRequest = trim((string) ($_GET['status'] ?? ''));
+$includeExecutedRequest = trim((string) ($_GET['include_executed'] ?? ''));
 $dateFromRequest = trim((string) ($_GET['date_from'] ?? ''));
 $dateToRequest = trim((string) ($_GET['date_to'] ?? ''));
 $ajaxAction = trim((string) ($_GET['ajax'] ?? ''));
+$hasIncludeExecutedRequest = array_key_exists('include_executed', $_GET);
 
 function user_pref_path(): string
 {
@@ -365,6 +367,11 @@ function is_open_workorder_status(string $status): bool
     return true;
 }
 
+function is_executed_workorder_status(string $status): bool
+{
+    return strtolower(trim($status)) === 'uitgevoerd';
+}
+
 function fetch_workorder_open_counts(string $environment, string $company, array $resourceNos, array $auth): array
 {
     $result = [];
@@ -552,7 +559,15 @@ $selectedWorkOrder = null;
 $selectedWorkOrderNoMaterialNeeded = null;
 $planningLines = [];
 $availableWorkorderStatuses = [];
+$workOrderStatusCounts = [];
+$allWorkOrdersCount = 0;
 $selectedStatus = $selectedStatusRequest;
+$includeExecuted = $includeExecutedRequest !== '' && $includeExecutedRequest !== '0';
+
+if (is_executed_workorder_status($selectedStatus)) {
+    $includeExecuted = true;
+}
+
 $today = new DateTimeImmutable('today');
 $defaultRangeStart = $today->modify('-7 days');
 $defaultRangeEnd = $today->modify('+28 days');
@@ -702,10 +717,12 @@ try {
         );
 
         $statusMap = [];
+        $allWorkOrdersCount = count($workOrders);
         foreach ($workOrders as $workOrder) {
             $status = trim((string) ($workOrder['Status'] ?? ''));
             if ($status !== '') {
                 $statusMap[$status] = true;
+                $workOrderStatusCounts[$status] = (int) ($workOrderStatusCounts[$status] ?? 0) + 1;
             }
         }
         $availableWorkorderStatuses = array_keys($statusMap);
@@ -719,6 +736,11 @@ try {
             $workOrders = array_values(array_filter(
                 $workOrders,
                 static fn(array $workOrder): bool => trim((string) ($workOrder['Status'] ?? '')) === $selectedStatus
+            ));
+        } elseif (!$includeExecuted) {
+            $workOrders = array_values(array_filter(
+                $workOrders,
+                static fn(array $workOrder): bool => !is_executed_workorder_status((string) ($workOrder['Status'] ?? ''))
             ));
         }
 
@@ -778,6 +800,7 @@ $listQuery = [
     'date_to' => $dateToValue,
     'q' => $searchQuery,
     'status' => $selectedStatus,
+    'include_executed' => $includeExecuted ? '1' : '',
 ];
 $listQuery = array_filter($listQuery, static function ($value): bool {
     return trim((string) $value) !== '';
@@ -1037,6 +1060,29 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
         .toolbar .actions .field {
             min-width: 150px;
             margin: 0;
+        }
+
+        .toolbar .actions .include-executed-field {
+            min-width: auto;
+            margin-right: auto;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .toolbar .actions .include-executed-field[hidden] {
+            display: none;
+        }
+
+        .toolbar .actions .include-executed-field input {
+            width: auto;
+            margin: 0;
+        }
+
+        .toolbar .actions .include-executed-field label {
+            margin: 0;
+            font-size: .86rem;
+            color: var(--text);
         }
 
         .range-row {
@@ -1346,13 +1392,21 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
                     placeholder="Bijv. WO-123 of onderhoud" />
             </div>
             <div class="actions">
+                <div id="include-executed-wrap" class="include-executed-field" <?= $selectedStatus === '' ? '' : 'hidden' ?>>
+                    <input type="hidden" name="include_executed" value="0" />
+                    <input id="include_executed" name="include_executed" type="checkbox" value="1"
+                        data-server-state="<?= $hasIncludeExecutedRequest ? '1' : '0' ?>"
+                        <?= $includeExecuted ? 'checked' : '' ?> />
+                    <label for="include_executed">Incl. reeds uitgevoerd</label>
+                </div>
                 <div class="field">
                     <label for="status">Status</label>
                     <select id="status" name="status">
-                        <option value="" <?= $selectedStatus === '' ? 'selected' : '' ?>>Alles</option>
+                        <option value="" <?= $selectedStatus === '' ? 'selected' : '' ?>>Alles (<?= $allWorkOrdersCount ?>)</option>
                         <?php foreach ($availableWorkorderStatuses as $statusOption): ?>
+                            <?php $statusCount = (int) ($workOrderStatusCounts[$statusOption] ?? 0); ?>
                             <option value="<?= htmlspecialchars($statusOption) ?>" <?= $statusOption === $selectedStatus ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($statusOption) ?>
+                                <?= htmlspecialchars($statusOption . ' (' . $statusCount . ')') ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
@@ -1420,11 +1474,6 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
 
         <?php else: ?>
             <h1 class="title">Mijn werkorders</h1>
-            <p class="subtitle">
-                <?= htmlspecialchars($selectedResourceName !== '' ? $selectedResourceName : $userEmail) ?> · gesorteerd op
-                uitvoerdatum · periode <?= htmlspecialchars($rangeStart->format('d-m-Y')) ?> t/m
-                <?= htmlspecialchars($rangeEnd->format('d-m-Y')) ?>
-            </p>
 
             <?php if ($selectedResourceNo === ''): ?>
                 <div class="card empty">Geen servicemonteur geselecteerd.</div>
@@ -1751,6 +1800,81 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
             }
 
             const personSelectEl = document.getElementById('person');
+            const statusSelectEl = document.getElementById('status');
+            const includeExecutedWrapEl = document.getElementById('include-executed-wrap');
+            const includeExecutedCheckboxEl = document.getElementById('include_executed');
+            const includeExecutedStorageKey = 'daedalus.includeExecuted';
+
+            function readSavedIncludeExecuted()
+            {
+                try
+                {
+                    return window.localStorage.getItem(includeExecutedStorageKey) === '1';
+                }
+                catch (error)
+                {
+                    return false;
+                }
+            }
+
+            function saveIncludeExecuted(isChecked)
+            {
+                try
+                {
+                    window.localStorage.setItem(includeExecutedStorageKey, isChecked ? '1' : '0');
+                }
+                catch (error)
+                {
+                }
+            }
+
+            function syncIncludeExecutedVisibility()
+            {
+                if (!statusSelectEl || !includeExecutedWrapEl || !includeExecutedCheckboxEl)
+                {
+                    return;
+                }
+
+                const currentStatus = (statusSelectEl.value || '').trim().toLowerCase();
+                const isAll = currentStatus === '';
+                const isExecuted = currentStatus === 'uitgevoerd';
+
+                if (isExecuted)
+                {
+                    includeExecutedCheckboxEl.checked = true;
+                    saveIncludeExecuted(true);
+                }
+
+                if (isAll)
+                {
+                    includeExecutedWrapEl.hidden = false;
+                }
+                else
+                {
+                    includeExecutedWrapEl.hidden = true;
+                }
+            }
+
+            if (includeExecutedCheckboxEl)
+            {
+                const hasServerState = (includeExecutedCheckboxEl.getAttribute('data-server-state') || '') === '1';
+                if (!hasServerState)
+                {
+                    includeExecutedCheckboxEl.checked = readSavedIncludeExecuted();
+                }
+
+                includeExecutedCheckboxEl.addEventListener('change', function ()
+                {
+                    saveIncludeExecuted(includeExecutedCheckboxEl.checked);
+                });
+            }
+
+            if (statusSelectEl)
+            {
+                statusSelectEl.addEventListener('change', syncIncludeExecutedVisibility);
+                syncIncludeExecutedVisibility();
+            }
+
             if (personSelectEl)
             {
                 const countsUrl = (personSelectEl.getAttribute('data-counts-url') || '').trim();
