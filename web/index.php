@@ -80,6 +80,7 @@ $searchQuery = trim((string) ($_GET['q'] ?? ''));
 $selectedStatusRequest = trim((string) ($_GET['status'] ?? ''));
 $dateFromRequest = trim((string) ($_GET['date_from'] ?? ''));
 $dateToRequest = trim((string) ($_GET['date_to'] ?? ''));
+$ajaxAction = trim((string) ($_GET['ajax'] ?? ''));
 
 function user_pref_path(): string
 {
@@ -299,21 +300,36 @@ function material_line_status(array $line): array
     }
 
     if ($purchaseOrderNo !== '' || $expectedReceiptDate !== '' || $outstandingQty > 0) {
+        $rawExpectedDate = trim((string) $expectedReceiptDate);
+        $isUnknownExpectedDate = $rawExpectedDate !== '' && strpos($rawExpectedDate, '0001-01-01') === 0;
+        $hasKnownExpectedDate = $rawExpectedDate !== '' && !$isUnknownExpectedDate;
+
         $detailParts = [];
         if ($purchaseOrderNo !== '') {
             $detailParts[] = 'PO: ' . $purchaseOrderNo;
         }
-        if ($expectedReceiptDate !== '') {
-            $detailParts[] = 'Verwacht: ' . nl_date($expectedReceiptDate);
+
+        if ($rawExpectedDate !== '') {
+            if ($isUnknownExpectedDate) {
+                $detailParts[] = 'Verwacht: Geen levertijd bekend';
+            } else {
+                $detailParts[] = 'Verwacht: ' . nl_date($rawExpectedDate);
+            }
         }
+
         if (empty($detailParts)) {
             $detailParts[] = $statusMaterial;
         }
 
-        return ['label' => 'In bestelling', 'class' => 'warn', 'detail' => implode(' · ', $detailParts)];
+        if ($hasKnownExpectedDate) {
+            return ['label' => 'In bestelling', 'class' => 'warn', 'detail' => implode(' · ', $detailParts)];
+        }
+
+        return ['label' => 'Onbekend', 'class' => 'unknown', 'detail' => implode(' · ', $detailParts)];
     }
 
-    return ['label' => $statusMaterial, 'class' => 'neutral', 'detail' => $binCode !== '' ? 'Bin: ' . $binCode : '-'];
+    $fallbackClass = strtolower($statusMaterial) === 'onbekend' ? 'unknown' : 'neutral';
+    return ['label' => $statusMaterial, 'class' => $fallbackClass, 'detail' => $binCode !== '' ? 'Bin: ' . $binCode : '-'];
 }
 
 function is_open_workorder_status(string $status): bool
@@ -553,6 +569,43 @@ if ($userEmail !== '') {
 
 $selectedResourceNo = '';
 $selectedResourceName = '';
+$ownResourceNo = '';
+
+if ($ajaxAction === 'resource_counts') {
+    $resourceNosInput = $_GET['resource_nos'] ?? [];
+    if (!is_array($resourceNosInput)) {
+        $resourceNosInput = [$resourceNosInput];
+    }
+
+    $resourceNos = [];
+    foreach ($resourceNosInput as $resourceNoInput) {
+        $resourceNo = trim((string) $resourceNoInput);
+        if ($resourceNo !== '') {
+            $resourceNos[$resourceNo] = true;
+        }
+    }
+
+    $resourceNos = array_keys($resourceNos);
+    if (count($resourceNos) > 300) {
+        $resourceNos = array_slice($resourceNos, 0, 300);
+    }
+
+    header('Content-Type: application/json; charset=utf-8');
+    try {
+        $counts = fetch_workorder_open_counts($environment, $company, $resourceNos, $auth);
+        echo json_encode([
+            'ok' => true,
+            'counts' => $counts,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    } catch (Throwable $throwable) {
+        http_response_code(500);
+        echo json_encode([
+            'ok' => false,
+            'error' => 'Kon aantallen niet laden.',
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+    exit;
+}
 
 try {
     $resourcesForUser = fetch_app_resources_by_email($environment, $company, $userEmail, $auth);
@@ -591,13 +644,6 @@ try {
             $serviceResourceMap[$no] = $serviceResource;
         }
     }
-
-    $openWorkOrderCounts = fetch_workorder_open_counts(
-        $environment,
-        $company,
-        array_keys($serviceResourceMap),
-        $auth
-    );
 
     if ($selectedPersonNoRequest !== '' && isset($serviceResourceMap[$selectedPersonNoRequest])) {
         $selectedResourceNo = $selectedPersonNoRequest;
@@ -721,6 +767,10 @@ $listQuery = array_filter($listQuery, static function ($value): bool {
     return trim((string) $value) !== '';
 });
 $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQuery, '', '&', PHP_QUERY_RFC3986)) : '');
+$resourceCountsUrl = 'index.php?' . http_build_query([
+    'ajax' => 'resource_counts',
+    'company' => $company,
+], '', '&', PHP_QUERY_RFC3986);
 
 ?>
 
@@ -871,6 +921,12 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
             background: #f7f9fb;
         }
 
+        .badge.unknown {
+            color: #8e2a2a;
+            border-color: #f2cdcd;
+            background: #fff3f3;
+        }
+
         .detail-head {
             background: var(--card);
             border: 1px solid var(--border);
@@ -922,6 +978,10 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
             margin-bottom: 10px;
             display: grid;
             gap: 8px;
+        }
+
+        .toolbar.is-hidden {
+            display: none;
         }
 
         .field label {
@@ -1215,7 +1275,8 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
     <main class="page">
         <img src="logo-website.png" alt="KVT" class="logo" />
 
-        <form class="toolbar" method="get" action="index.php" data-nav-form>
+        <form class="toolbar<?= $selectedWorkOrder !== null ? ' is-hidden' : '' ?>" method="get" action="index.php"
+            data-nav-form>
             <div class="field">
                 <label for="company">Bedrijf</label>
                 <select id="company" name="company" onchange="this.form.submit()">
@@ -1228,16 +1289,23 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
             </div>
             <div class="field">
                 <label for="person">Servicemonteur</label>
-                <select id="person" name="person" onchange="this.form.submit()">
+                <select id="person" name="person" onchange="this.form.submit()"
+                    data-counts-url="<?= htmlspecialchars($resourceCountsUrl) ?>"
+                    data-own-resource="<?= htmlspecialchars($ownResourceNo) ?>">
                     <?php if (count($serviceResources) === 0): ?>
                         <option value="">Geen servicemonteurs gevonden</option>
                     <?php else: ?>
                         <?php foreach ($serviceResources as $serviceResource): ?>
                             <?php $resourceNo = trim((string) ($serviceResource['No'] ?? '')); ?>
-                            <option value="<?= htmlspecialchars($resourceNo) ?>" <?= $resourceNo === $selectedResourceNo ? 'selected' : '' ?>>
+                            <?php $baseName = safe_text((string) ($serviceResource['Name'] ?? '')); ?>
+                            <option value="<?= htmlspecialchars($resourceNo) ?>" data-name="<?= htmlspecialchars($baseName) ?>"
+                                <?= $resourceNo === $selectedResourceNo ? 'selected' : '' ?>>
                                 <?php
                                 $openCount = (int) ($openWorkOrderCounts[$resourceNo] ?? 0);
-                                $optionLabel = safe_text((string) ($serviceResource['Name'] ?? '')) . ' (' . $openCount . ' open werkorders)';
+                                $optionLabel = $baseName;
+                                if (isset($openWorkOrderCounts[$resourceNo])) {
+                                    $optionLabel .= ' (' . $openCount . ' open werkorders)';
+                                }
                                 ?>
                                 <?= htmlspecialchars($optionLabel) ?>
                             </option>
@@ -1312,6 +1380,7 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
                 <section class="line-list">
                     <?php foreach ($planningLines as $line): ?>
                         <?php $lineStatus = material_line_status($line); ?>
+                        <?php $extendedText = trim((string) ($line['KVT_Extended_Text'] ?? '')); ?>
                         <article class="card">
                             <div class="row">
                                 <p class="line-name"><?= htmlspecialchars(safe_text((string) ($line['Description'] ?? ''))) ?></p>
@@ -1319,13 +1388,14 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
                                     class="badge <?= htmlspecialchars($lineStatus['class']) ?>"><?= htmlspecialchars($lineStatus['label']) ?></span>
                             </div>
                             <div class="meta">
-                                Regel <?= htmlspecialchars((string) ($line['Line_No'] ?? '-')) ?>
-                                · Aantal <?= htmlspecialchars((string) ($line['Quantity'] ?? '0')) ?>
+                                Aantal: <?= htmlspecialchars((string) ($line['Quantity'] ?? '0')) ?>
                                 <?= htmlspecialchars(safe_text((string) ($line['Unit_of_Measure_Code'] ?? ''), '')) ?>
                             </div>
-                            <div class="line-desc">
-                                <?= htmlspecialchars(safe_text((string) ($line['KVT_Extended_Text'] ?? ''), '-')) ?>
-                            </div>
+                            <?php if ($extendedText !== ''): ?>
+                                <div class="line-desc">
+                                    <?= htmlspecialchars($extendedText) ?>
+                                </div>
+                            <?php endif; ?>
                             <div class="status-detail"><?= htmlspecialchars($lineStatus['detail']) ?></div>
                         </article>
                     <?php endforeach; ?>
@@ -1336,7 +1406,7 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
             <h1 class="title">Mijn werkorders</h1>
             <p class="subtitle">
                 <?= htmlspecialchars($selectedResourceName !== '' ? $selectedResourceName : $userEmail) ?> · gesorteerd op
-                uitvoerdatum (oud → nieuw) · periode <?= htmlspecialchars($rangeStart->format('d-m-Y')) ?> t/m
+                uitvoerdatum · periode <?= htmlspecialchars($rangeStart->format('d-m-Y')) ?> t/m
                 <?= htmlspecialchars($rangeEnd->format('d-m-Y')) ?>
             </p>
 
@@ -1662,6 +1732,89 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
             if (loaderTextEl && Array.isArray(loadingTexts) && loadingTexts.length > 0)
             {
                 window.setInterval(rotateLoadingText, 5000);
+            }
+
+            const personSelectEl = document.getElementById('person');
+            if (personSelectEl)
+            {
+                const countsUrl = (personSelectEl.getAttribute('data-counts-url') || '').trim();
+                const ownResourceNo = (personSelectEl.getAttribute('data-own-resource') || '').trim();
+                const personOptions = Array.from(personSelectEl.options || []).filter(function (optionEl)
+                {
+                    return (optionEl.value || '').trim() !== '';
+                });
+
+                if (countsUrl !== '' && personOptions.length > 0)
+                {
+                    const endpoint = new URL(countsUrl, window.location.href);
+                    personOptions.forEach(function (optionEl)
+                    {
+                        endpoint.searchParams.append('resource_nos[]', (optionEl.value || '').trim());
+                    });
+
+                    fetch(endpoint.toString(), {
+                        credentials: 'same-origin',
+                        headers: {
+                            'Accept': 'application/json'
+                        }
+                    })
+                        .then(function (response)
+                        {
+                            if (!response.ok)
+                            {
+                                throw new Error('Counts request failed');
+                            }
+                            return response.json();
+                        })
+                        .then(function (payload)
+                        {
+                            const counts = payload && typeof payload === 'object' && payload.counts && typeof payload.counts === 'object'
+                                ? payload.counts
+                                : {};
+
+                            personOptions.forEach(function (optionEl)
+                            {
+                                const resourceNo = (optionEl.value || '').trim();
+                                if (resourceNo === '')
+                                {
+                                    return;
+                                }
+
+                                const baseName = (optionEl.getAttribute('data-name') || optionEl.textContent || '').trim();
+                                const rawCount = counts[resourceNo];
+                                const openCount = Number.isFinite(Number(rawCount)) ? Number(rawCount) : 0;
+                                const keepOption = openCount > 0 || resourceNo === ownResourceNo;
+
+                                if (!keepOption)
+                                {
+                                    optionEl.remove();
+                                    return;
+                                }
+
+                                optionEl.textContent = baseName + ' (' + openCount + ' open werkorders)';
+                            });
+
+                            if (personSelectEl.options.length === 0)
+                            {
+                                const emptyOption = document.createElement('option');
+                                emptyOption.value = '';
+                                emptyOption.textContent = 'Geen servicemonteurs gevonden';
+                                personSelectEl.appendChild(emptyOption);
+                            }
+
+                            const hasSelected = Array.from(personSelectEl.options).some(function (optionEl)
+                            {
+                                return optionEl.selected;
+                            });
+                            if (!hasSelected && personSelectEl.options.length > 0)
+                            {
+                                personSelectEl.selectedIndex = 0;
+                            }
+                        })
+                        .catch(function ()
+                        {
+                        });
+                }
             }
         })();
     </script>

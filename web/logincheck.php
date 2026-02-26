@@ -16,7 +16,7 @@ function is_trusted_requester(): bool
 
 if (!is_trusted_requester()) {
     require __DIR__ . "/../login/lib.php";
-    return true; //all company members are allowed
+    //all company members are allowed
     /*
     if (
         !array_any($allowedUsers, function ($email) {
