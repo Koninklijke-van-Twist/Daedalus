@@ -66,8 +66,8 @@ $odataTtl = [
     'usersetup_by_email' => 3600,
     'resource_by_userid' => 3600,
     'service_resources' => 3600,
-    'workorders_counts' => 120,
-    'werkorders_material_flags' => 120,
+    'workorders_counts' => 300,
+    'werkorders_material_flags' => 300,
     'workorders_list' => 600,
     'workorder_detail' => 300,
     'planning_lines' => 300,
@@ -77,8 +77,8 @@ $userEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
 $selectedWorkOrderNo = trim((string) ($_GET['workorder'] ?? ''));
 $selectedPersonNoRequest = trim((string) ($_GET['person'] ?? ''));
 $searchQuery = trim((string) ($_GET['q'] ?? ''));
-$monthsPastRequest = (int) ($_GET['months_past'] ?? 0);
-$monthsFutureRequest = (int) ($_GET['months_future'] ?? 0);
+$dateFromRequest = trim((string) ($_GET['date_from'] ?? ''));
+$dateToRequest = trim((string) ($_GET['date_to'] ?? ''));
 
 function user_pref_path(): string
 {
@@ -149,15 +149,23 @@ function odata_ttl(string $key, int $fallback = 120): int
     return $value > 0 ? $value : $fallback;
 }
 
-function clamp_int_range(int $value, int $min, int $max): int
+function parse_date_ymd(string $value): ?DateTimeImmutable
 {
-    if ($value < $min) {
-        return $min;
+    $value = trim($value);
+    if ($value === '') {
+        return null;
     }
-    if ($value > $max) {
-        return $max;
+
+    $parsed = DateTimeImmutable::createFromFormat('Y-m-d', $value);
+    if (!($parsed instanceof DateTimeImmutable)) {
+        return null;
     }
-    return $value;
+
+    if ($parsed->format('Y-m-d') !== $value) {
+        return null;
+    }
+
+    return $parsed;
 }
 
 function fetch_app_resources_by_email(string $environment, string $company, string $email, array $auth): array
@@ -286,7 +294,7 @@ function material_line_status(array $line): array
     $outstandingQty = (float) ($line['LVS_Outstanding_Qty_Base'] ?? 0);
 
     if ($completelyPicked || ($binCode !== '' && $qtyPicked > 0)) {
-        return ['label' => 'In bin', 'class' => 'ok', 'detail' => $binCode !== '' ? 'Bin: ' . $binCode : $statusMaterial];
+        return ['label' => "In bin $binCode", 'class' => 'ok', 'detail' => $binCode !== '' ? 'Bin: ' . $binCode : $statusMaterial];
     }
 
     if ($purchaseOrderNo !== '' || $expectedReceiptDate !== '' || $outstandingQty > 0) {
@@ -510,11 +518,20 @@ $workOrders = [];
 $selectedWorkOrder = null;
 $selectedWorkOrderNoMaterialNeeded = null;
 $planningLines = [];
-$monthsPast = clamp_int_range($monthsPastRequest, 0, 12);
-$monthsFuture = clamp_int_range($monthsFutureRequest, 0, 12);
 $today = new DateTimeImmutable('today');
-$rangeStart = $today->modify('-7 days')->modify('-' . $monthsPast . ' months');
-$rangeEnd = $today->modify('+28 days')->modify('+' . $monthsFuture . ' months');
+$defaultRangeStart = $today->modify('-7 days');
+$defaultRangeEnd = $today->modify('+28 days');
+$rangeStart = parse_date_ymd($dateFromRequest) ?? $defaultRangeStart;
+$rangeEnd = parse_date_ymd($dateToRequest) ?? $defaultRangeEnd;
+
+if ($rangeEnd < $rangeStart) {
+    $tmp = $rangeStart;
+    $rangeStart = $rangeEnd;
+    $rangeEnd = $tmp;
+}
+
+$dateFromValue = $rangeStart->format('Y-m-d');
+$dateToValue = $rangeEnd->format('Y-m-d');
 
 $preferredCompany = get_user_company_preference($userEmail);
 $requestedCompany = trim((string) ($_GET['company'] ?? ''));
@@ -667,17 +684,13 @@ $title = $selectedWorkOrderNo !== '' ? 'Werkorder details' : 'Mijn werkorders';
 $listQuery = [
     'company' => $company,
     'person' => $selectedResourceNo,
-    'months_past' => $monthsPast,
-    'months_future' => $monthsFuture,
+    'date_from' => $dateFromValue,
+    'date_to' => $dateToValue,
     'q' => $searchQuery,
 ];
-$listQuery = array_filter($listQuery, static function ($value, string $key): bool {
-    if (in_array($key, ['months_past', 'months_future'], true)) {
-        return (int) $value > 0;
-    }
-
+$listQuery = array_filter($listQuery, static function ($value): bool {
     return trim((string) $value) !== '';
-}, ARRAY_FILTER_USE_BOTH);
+});
 $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQuery, '', '&', PHP_QUERY_RFC3986)) : '');
 
 ?>
@@ -914,6 +927,12 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
             justify-content: flex-end;
         }
 
+        .range-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
         .toolbar button {
             border: 1px solid var(--primary);
             background: var(--primary);
@@ -939,7 +958,7 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
 
         .page-loader-visual {
             position: relative;
-            width: min(190px, 62vw);
+            width: min(220px, 62vw);
             aspect-ratio: 1 / 1;
             display: grid;
             place-items: center;
@@ -950,7 +969,7 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
             position: absolute;
             inset: 0;
             border-radius: 50%;
-            border: 5px solid #d7e4f5;
+            border: 15px solid #d7e4f5;
             border-top-color: var(--primary);
             border-right-color: #4a7fc6;
             animation: loaderSpin 1.05s linear infinite;
@@ -958,7 +977,7 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
         }
 
         .page-loader-visual img {
-            width: min(170px, 58vw);
+            width: min(160px, 58vw);
             height: auto;
             position: relative;
             z-index: 2;
@@ -1033,21 +1052,16 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
                     <?php endif; ?>
                 </select>
             </div>
-            <div class="field">
-                <label for="months_past">Maanden terug</label>
-                <select id="months_past" name="months_past" onchange="this.form.submit()">
-                    <?php for ($m = 0; $m <= 12; $m++): ?>
-                        <option value="<?= $m ?>" <?= $m === $monthsPast ? 'selected' : '' ?>><?= $m ?></option>
-                    <?php endfor; ?>
-                </select>
-            </div>
-            <div class="field">
-                <label for="months_future">Maanden vooruit</label>
-                <select id="months_future" name="months_future" onchange="this.form.submit()">
-                    <?php for ($m = 0; $m <= 12; $m++): ?>
-                        <option value="<?= $m ?>" <?= $m === $monthsFuture ? 'selected' : '' ?>><?= $m ?></option>
-                    <?php endfor; ?>
-                </select>
+            <div class="range-row">
+                <div class="field">
+                    <label for="date_from">Van</label>
+                    <input id="date_from" name="date_from" type="date"
+                        value="<?= htmlspecialchars($dateFromValue) ?>" />
+                </div>
+                <div class="field">
+                    <label for="date_to">Tot</label>
+                    <input id="date_to" name="date_to" type="date" value="<?= htmlspecialchars($dateToValue) ?>" />
+                </div>
             </div>
             <div class="field">
                 <label for="q">Zoeken op werkorder of omschrijving</label>
