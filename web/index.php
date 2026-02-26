@@ -418,6 +418,45 @@ function status_enabled_default(string $status): bool
     return !is_executed_workorder_status($status);
 }
 
+function status_css_class(string $status): string
+{
+    $normalized = strtolower(trim($status));
+    if ($normalized === '') {
+        return '';
+    }
+
+    $normalized = strtr($normalized, [
+        'á' => 'a',
+        'à' => 'a',
+        'ä' => 'a',
+        'â' => 'a',
+        'ã' => 'a',
+        'é' => 'e',
+        'è' => 'e',
+        'ë' => 'e',
+        'ê' => 'e',
+        'í' => 'i',
+        'ì' => 'i',
+        'ï' => 'i',
+        'î' => 'i',
+        'ó' => 'o',
+        'ò' => 'o',
+        'ö' => 'o',
+        'ô' => 'o',
+        'ú' => 'u',
+        'ù' => 'u',
+        'ü' => 'u',
+        'û' => 'u',
+        'ñ' => 'n',
+        'ç' => 'c',
+    ]);
+
+    $slug = preg_replace('/[^a-z0-9]+/', '-', $normalized);
+    $slug = is_string($slug) ? trim($slug, '-') : '';
+
+    return $slug !== '' ? ('status-' . $slug) : '';
+}
+
 function normalize_status_filter_map(array $input): array
 {
     $result = [];
@@ -984,6 +1023,13 @@ if (!is_string($statusFiltersPayloadValue)) {
     $statusFiltersPayloadValue = '{}';
 }
 
+$activeStatusFilters = [];
+foreach ($availableWorkorderStatuses as $statusValue) {
+    if (!empty($statusFiltersForModal[$statusValue])) {
+        $activeStatusFilters[] = $statusValue;
+    }
+}
+
 ?>
 
 <!doctype html>
@@ -1058,6 +1104,98 @@ if (!is_string($statusFiltersPayloadValue)) {
             padding: 10px;
             margin-bottom: 10px;
             font-size: .9rem;
+        }
+
+        .status-open {
+            background: #ffffff;
+        }
+
+        .status-getekend {
+            background: #f6f9e9;
+        }
+
+        .status-uitgevoerd {
+            background: #e9f9ee;
+        }
+
+        .status-gecontroleerd {
+            background: #fff1dd;
+        }
+
+        .status-geannuleerd {
+            background: #ffa7a7;
+        }
+
+        .status-afgesloten {
+            background: #c5c5c5;
+        }
+
+        .status-gepland {
+            background: #ddefff;
+        }
+
+        .status-onderhanden {
+            background: #ffe9e9;
+        }
+
+        .badge.status-open,
+        .badge.status-getekend,
+        .badge.status-uitgevoerd,
+        .badge.status-gecontroleerd,
+        .badge.status-geannuleerd,
+        .badge.status-afgesloten,
+        .badge.status-gepland,
+        .badge.status-onderhanden,
+        .active-filter-chip.status-open,
+        .active-filter-chip.status-getekend,
+        .active-filter-chip.status-uitgevoerd,
+        .active-filter-chip.status-gecontroleerd,
+        .active-filter-chip.status-geannuleerd,
+        .active-filter-chip.status-afgesloten,
+        .active-filter-chip.status-gepland,
+        .active-filter-chip.status-onderhanden {
+            color: var(--text);
+            border-color: #cfd8e2;
+        }
+
+        .badge.status-open,
+        .active-filter-chip.status-open {
+            background: #ffffff;
+        }
+
+        .badge.status-getekend,
+        .active-filter-chip.status-getekend {
+            background: #f6f9e9;
+        }
+
+        .badge.status-uitgevoerd,
+        .active-filter-chip.status-uitgevoerd {
+            background: #e9f9ee;
+        }
+
+        .badge.status-gecontroleerd,
+        .active-filter-chip.status-gecontroleerd {
+            background: #fff1dd;
+        }
+
+        .badge.status-geannuleerd,
+        .active-filter-chip.status-geannuleerd {
+            background: #ffa7a7;
+        }
+
+        .badge.status-afgesloten,
+        .active-filter-chip.status-afgesloten {
+            background: #c5c5c5;
+        }
+
+        .badge.status-gepland,
+        .active-filter-chip.status-gepland {
+            background: #ddefff;
+        }
+
+        .badge.status-onderhanden,
+        .active-filter-chip.status-onderhanden {
+            background: #ffe9e9;
         }
 
         .wo-list,
@@ -1237,7 +1375,28 @@ if (!is_string($statusFiltersPayloadValue)) {
         }
 
         .toolbar .actions .status-filter-trigger {
-            margin-right: auto;
+            margin-right: 0;
+        }
+
+        .toolbar .actions .active-filter-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            flex: 1 1 auto;
+            min-width: 120px;
+        }
+
+        .active-filter-chip {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid #cfd8e2;
+            border-radius: 999px;
+            width: 14px;
+            height: 14px;
+            padding: 0;
+            background: #f7f9fb;
+            color: var(--text);
         }
 
         .range-row {
@@ -1247,6 +1406,16 @@ if (!is_string($statusFiltersPayloadValue)) {
         }
 
         .toolbar button {
+            border: 1px solid var(--primary);
+            background: var(--primary);
+            color: #fff;
+            border-radius: 10px;
+            padding: 9px 12px;
+            font-size: .9rem;
+            font-weight: 600;
+        }
+
+        .button {
             border: 1px solid var(--primary);
             background: var(--primary);
             color: #fff;
@@ -1315,6 +1484,15 @@ if (!is_string($statusFiltersPayloadValue)) {
         .status-filter-item input {
             width: auto;
             margin: 0;
+        }
+
+        .status-filter-label {
+            display: inline-flex;
+            align-items: center;
+            border: 1px solid #cfd8e2;
+            border-radius: 999px;
+            padding: 3px 9px;
+            color: var(--text);
         }
 
         .status-modal-actions {
@@ -1621,6 +1799,13 @@ if (!is_string($statusFiltersPayloadValue)) {
             </div>
             <div class="actions">
                 <button id="open-status-filter" class="status-filter-trigger" type="button">Statusfilter</button>
+                <div class="active-filter-chips">
+                    <?php foreach ($activeStatusFilters as $activeStatus): ?>
+                        <?php $activeStatusClass = status_css_class($activeStatus); ?>
+                        <span class="active-filter-chip <?= htmlspecialchars($activeStatusClass) ?>" title="<?= htmlspecialchars($activeStatus) ?>"
+                            aria-label="<?= htmlspecialchars($activeStatus) ?>"></span>
+                    <?php endforeach; ?>
+                </div>
                 <input id="status_filters" name="status_filters" type="hidden"
                     value="<?= htmlspecialchars($statusFiltersPayloadValue) ?>" />
                 <button type="submit">Toepassen</button>
@@ -1642,18 +1827,19 @@ if (!is_string($statusFiltersPayloadValue)) {
                             $statusEnabled = array_key_exists($statusOption, $statusFiltersForModal)
                                 ? (bool) $statusFiltersForModal[$statusOption]
                                 : status_enabled_default($statusOption);
+                            $statusOptionClass = status_css_class($statusOption);
                             ?>
                             <label class="status-filter-item">
                                 <input type="checkbox" class="status-filter-checkbox"
                                     data-status="<?= htmlspecialchars($statusOption) ?>" <?= $statusEnabled ? 'checked' : '' ?> />
-                                <span><?= htmlspecialchars($statusOption . ' (' . $statusCount . ')') ?></span>
+                                <span class="status-filter-label <?= htmlspecialchars($statusOptionClass) ?>"><?= htmlspecialchars($statusOption . ' (' . $statusCount . ')') ?></span>
                             </label>
                         <?php endforeach; ?>
                     <?php endif; ?>
                 </div>
                 <div class="status-modal-actions">
-                    <button type="button" class="secondary" data-status-close>Annuleren</button>
-                    <button id="save-status-filter" type="button">Opslaan</button>
+                    <button class="button secondary" type="button" data-status-close>Annuleren</button>
+                    <button class="button" id="save-status-filter" type="button">Opslaan</button>
                 </div>
             </div>
         </div>
@@ -1731,6 +1917,9 @@ if (!is_string($statusFiltersPayloadValue)) {
                         $workOrderHref = 'index.php?' . http_build_query($workOrderHrefParams, '', '&', PHP_QUERY_RFC3986);
                         $workOrderNo = (string) ($workOrder['No'] ?? '');
                         $noMaterialNeeded = (bool) ($workOrderNoMaterialNeededMap[$workOrderNo] ?? false);
+                        $workOrderStatusText = safe_text((string) ($workOrder['Status'] ?? ''));
+                        $workOrderStatusClass = status_css_class((string) ($workOrder['Status'] ?? ''));
+                        $workOrderBadgeClass = $workOrderStatusClass !== '' ? ('badge ' . $workOrderStatusClass) : 'badge neutral';
                         ?>
                         <a class="card" href="<?= htmlspecialchars($workOrderHref) ?>" data-nav-link>
                             <div class="row">
@@ -1742,7 +1931,7 @@ if (!is_string($statusFiltersPayloadValue)) {
                                     </h2>
                                 </div>
                                 <span
-                                    class="badge neutral"><?= htmlspecialchars(safe_text((string) ($workOrder['Status'] ?? ''))) ?></span>
+                                    class="<?= htmlspecialchars($workOrderBadgeClass) ?>"><?= htmlspecialchars($workOrderStatusText) ?></span>
                             </div>
                             <div class="meta">
                                 Uitvoerdatum: <?= htmlspecialchars(nl_date((string) ($workOrder['Start_Date'] ?? ''))) ?><br />
