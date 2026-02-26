@@ -77,6 +77,7 @@ $userEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
 $selectedWorkOrderNo = trim((string) ($_GET['workorder'] ?? ''));
 $selectedPersonNoRequest = trim((string) ($_GET['person'] ?? ''));
 $searchQuery = trim((string) ($_GET['q'] ?? ''));
+$selectedStatusRequest = trim((string) ($_GET['status'] ?? ''));
 $dateFromRequest = trim((string) ($_GET['date_from'] ?? ''));
 $dateToRequest = trim((string) ($_GET['date_to'] ?? ''));
 
@@ -518,6 +519,8 @@ $workOrders = [];
 $selectedWorkOrder = null;
 $selectedWorkOrderNoMaterialNeeded = null;
 $planningLines = [];
+$availableWorkorderStatuses = [];
+$selectedStatus = $selectedStatusRequest;
 $today = new DateTimeImmutable('today');
 $defaultRangeStart = $today->modify('-7 days');
 $defaultRangeEnd = $today->modify('+28 days');
@@ -636,6 +639,27 @@ try {
             $auth
         );
 
+        $statusMap = [];
+        foreach ($workOrders as $workOrder) {
+            $status = trim((string) ($workOrder['Status'] ?? ''));
+            if ($status !== '') {
+                $statusMap[$status] = true;
+            }
+        }
+        $availableWorkorderStatuses = array_keys($statusMap);
+        sort($availableWorkorderStatuses, SORT_NATURAL | SORT_FLAG_CASE);
+
+        if ($selectedStatus !== '' && !in_array($selectedStatus, $availableWorkorderStatuses, true)) {
+            $selectedStatus = '';
+        }
+
+        if ($selectedStatus !== '') {
+            $workOrders = array_values(array_filter(
+                $workOrders,
+                static fn(array $workOrder): bool => trim((string) ($workOrder['Status'] ?? '')) === $selectedStatus
+            ));
+        }
+
         if ($searchQuery !== '') {
             $workOrders = array_values(array_filter(
                 $workOrders,
@@ -691,6 +715,7 @@ $listQuery = [
     'date_from' => $dateFromValue,
     'date_to' => $dateToValue,
     'q' => $searchQuery,
+    'status' => $selectedStatus,
 ];
 $listQuery = array_filter($listQuery, static function ($value): bool {
     return trim((string) $value) !== '';
@@ -929,6 +954,13 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
         .toolbar .actions {
             display: flex;
             justify-content: flex-end;
+            align-items: flex-end;
+            gap: 8px;
+        }
+
+        .toolbar .actions .field {
+            min-width: 150px;
+            margin: 0;
         }
 
         .range-row {
@@ -1230,6 +1262,17 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
                     placeholder="Bijv. WO-123 of onderhoud" />
             </div>
             <div class="actions">
+                <div class="field">
+                    <label for="status">Status</label>
+                    <select id="status" name="status">
+                        <option value="" <?= $selectedStatus === '' ? 'selected' : '' ?>>Alles</option>
+                        <?php foreach ($availableWorkorderStatuses as $statusOption): ?>
+                            <option value="<?= htmlspecialchars($statusOption) ?>" <?= $statusOption === $selectedStatus ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($statusOption) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
                 <button type="submit">Toepassen</button>
             </div>
         </form>
