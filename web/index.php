@@ -230,8 +230,11 @@ function fetch_service_resources(string $environment, string $company, array $au
         if ($no === '' || $name === '') {
             continue;
         }
-        if ($type !== '' && $type !== 'person') {
-            continue;
+        if ($type !== '') {
+            $normalizedType = str_replace([' ', '-', '_'], '', $type);
+            if (!in_array($normalizedType, ['person', 'persoon'], true)) {
+                continue;
+            }
         }
 
         $result[] = [
@@ -339,7 +342,20 @@ function is_open_workorder_status(string $status): bool
         return true;
     }
 
-    $closedTerms = ['closed', 'afgerond', 'gereed', 'voltooid', 'cancelled', 'geannuleerd', 'finished'];
+    $closedTerms = [
+        'closed',
+        'afgesloten',
+        'afgerond',
+        'gereed',
+        'voltooid',
+        'cancelled',
+        'geannuleerd',
+        'finished',
+        'gefactureerd',
+        'uitgevoerd',
+        'ondertekend',
+        'gecontroleerd',
+    ];
     foreach ($closedTerms as $term) {
         if (strpos($normalized, $term) !== false) {
             return false;
@@ -1293,7 +1309,7 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
                     data-counts-url="<?= htmlspecialchars($resourceCountsUrl) ?>"
                     data-own-resource="<?= htmlspecialchars($ownResourceNo) ?>">
                     <?php if (count($serviceResources) === 0): ?>
-                        <option value="">Geen servicemonteurs gevonden</option>
+                        <option value="">Gegevens van servicemonteurs worden opgehaald...</option>
                     <?php else: ?>
                         <?php foreach ($serviceResources as $serviceResource): ?>
                             <?php $resourceNo = trim((string) ($serviceResource['No'] ?? '')); ?>
@@ -1372,10 +1388,10 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
                 </div>
             </section>
 
-            <h2 class="title">Details:</h2>
+            <h2 class="title">Artikelen:</h2>
 
             <?php if (count($planningLines) === 0): ?>
-                <div class="card empty">Geen details gevonden voor deze werkorder.</div>
+                <div class="card empty">Geen artikelen gevonden voor deze werkorder.</div>
             <?php else: ?>
                 <section class="line-list">
                     <?php foreach ($planningLines as $line): ?>
@@ -1781,9 +1797,10 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
                                 }
 
                                 const baseName = (optionEl.getAttribute('data-name') || optionEl.textContent || '').trim();
+                                const hasCount = Object.prototype.hasOwnProperty.call(counts, resourceNo);
                                 const rawCount = counts[resourceNo];
                                 const openCount = Number.isFinite(Number(rawCount)) ? Number(rawCount) : 0;
-                                const keepOption = openCount > 0 || resourceNo === ownResourceNo;
+                                const keepOption = !hasCount || openCount > 0 || resourceNo === ownResourceNo || optionEl.selected;
 
                                 if (!keepOption)
                                 {
@@ -1791,7 +1808,10 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
                                     return;
                                 }
 
-                                optionEl.textContent = baseName + ' (' + openCount + ' open werkorders)';
+                                if (hasCount)
+                                {
+                                    optionEl.textContent = baseName + ' (' + openCount + ' open werkorders)';
+                                }
                             });
 
                             if (personSelectEl.options.length === 0)

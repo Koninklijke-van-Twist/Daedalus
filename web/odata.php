@@ -94,7 +94,6 @@ function odata_get_json(string $url, array $auth): array
     }
 
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
 
     if ($code < 200 || $code >= 300) {
         throw new Exception("HTTP $code from OData: $raw");
