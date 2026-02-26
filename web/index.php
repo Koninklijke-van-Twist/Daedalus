@@ -62,15 +62,15 @@ $companies = [
 ];
 
 $odataTtl = [
-    'resource_by_email' => 600,
-    'usersetup_by_email' => 3600,
-    'resource_by_userid' => 3600,
-    'service_resources' => 3600,
-    'workorders_counts' => 300,
-    'werkorders_material_flags' => 300,
-    'workorders_list' => 600,
-    'workorder_detail' => 300,
-    'planning_lines' => 300,
+    'resource_by_email' => 600_00,
+    'usersetup_by_email' => 3600_00,
+    'resource_by_userid' => 3600_00,
+    'service_resources' => 3600_00,
+    'workorders_counts' => 300_00,
+    'werkorders_material_flags' => 300_00,
+    'workorders_list' => 600_00,
+    'workorder_detail' => 300_00,
+    'planning_lines' => 300_00,
 ];
 
 $userEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
@@ -673,7 +673,11 @@ try {
                 '$filter' => "LVS_Work_Order_No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
                 '$orderby' => 'Line_No asc',
             ]);
-            $planningLines = odata_get_all($linesUrl, $auth, odata_ttl('planning_lines'));
+            $planningLinesAll = odata_get_all($linesUrl, $auth, odata_ttl('planning_lines'));
+            $planningLines = array_values(array_filter($planningLinesAll, static function (array $line): bool {
+                $type = strtolower(trim((string) ($line['Type'] ?? '')));
+                return $type === 'item' || $type === 'artikel';
+            }));
         }
     }
 } catch (Throwable $throwable) {
@@ -985,7 +989,7 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
         }
 
         .page-loader-text {
-            margin-top: 14px;
+            margin-top: 6px;
             max-width: min(320px, 86vw);
             text-align: center;
             color: #2d3e53;
@@ -998,6 +1002,163 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
 
         .page-loader-text.fade-out {
             opacity: 0;
+        }
+
+        .loader-progress {
+            width: min(320px, 84vw);
+            margin-top: 58px;
+            margin-bottom: 0;
+            position: relative;
+            z-index: 3;
+        }
+
+        .loader-progress-shell {
+            position: relative;
+            height: 12px;
+            border-radius: 999px 0 0 999px;
+            border: 1px solid #aac0da;
+            border-right: none;
+            background: #e9eff7;
+            overflow: visible;
+            transform-origin: center;
+        }
+
+        .loader-progress-fill {
+            height: 100%;
+            width: 0%;
+            border-radius: 999px 0 0 999px;
+            background: #4c89d3;
+            /*            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);*/
+            transform-origin: bottom;
+        }
+
+        .loader-progress-fill.draining {
+            animation: loaderVerticalDrain 2200ms linear forwards;
+        }
+
+        .loader-progress-tip {
+            position: absolute;
+            right: -18px;
+            top: 50%;
+            width: 18px;
+            height: 12px;
+            transform: translateY(-50%);
+            border-radius: 0 6px 6px 0;
+            background: #e9eff7;
+            border: 1px solid #aac0da;
+            border-left: none;
+            transform-origin: left center;
+            transition: opacity 220ms ease;
+            z-index: 3;
+            overflow: hidden;
+        }
+
+        .loader-progress-tip::after {
+            content: '';
+            position: absolute;
+            left: -1px;
+            top: 0;
+            height: 100%;
+            width: 0%;
+            border-radius: inherit;
+            background: #4c89d3;
+            transition: width 500ms linear;
+        }
+
+        .loader-progress-shell.tip-fill .loader-progress-tip::after {
+            width: calc(100% + 1px);
+        }
+
+        .loader-progress-shell.tip-burst .loader-progress-tip {
+            animation: loaderTipBurst 980ms ease-in forwards;
+        }
+
+        .loader-progress-spill {
+            position: absolute;
+            right: -16px;
+            top: 6px;
+            width: 88px;
+            height: 220px;
+            opacity: 0;
+            pointer-events: none;
+            overflow: visible;
+        }
+
+        .loader-progress-spill path {
+            stroke: #6ea5e7;
+            stroke-width: 2;
+            fill: none;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            filter: drop-shadow(0 1px 2px rgba(33, 86, 160, 0.22));
+            stroke-dasharray: 320;
+            stroke-dashoffset: 320;
+        }
+
+        .loader-progress-shell.spilling .loader-progress-spill {
+            opacity: 1;
+            transition: opacity 120ms linear;
+        }
+
+        .loader-progress-shell.spilling .loader-progress-spill path {
+            animation: loaderSpillFlow 2200ms linear forwards, loaderSpillThickness 2200ms linear forwards;
+        }
+
+        @keyframes loaderVerticalDrain {
+            0% {
+                clip-path: inset(0 0 0 0);
+            }
+
+            100% {
+                clip-path: inset(100% 0 0 0);
+            }
+        }
+
+        @keyframes loaderTipBurst {
+            0% {
+                transform: translateY(-50%) translateX(0) rotate(0deg);
+                opacity: 1;
+            }
+
+            15% {
+                transform: translateY(-50%) translateX(8px) rotate(22deg);
+                opacity: 1;
+            }
+
+            100% {
+                transform: translateY(-50%) translateX(120vw) rotate(68deg);
+                opacity: 0;
+            }
+        }
+
+        @keyframes loaderSpillFlow {
+            0% {
+                stroke-dashoffset: 320;
+                opacity: 0.55;
+            }
+
+            12% {
+                opacity: 1;
+            }
+
+            100% {
+                stroke-dashoffset: 0;
+                opacity: 0.3;
+            }
+        }
+
+        @keyframes loaderSpillThickness {
+            0% {
+                stroke-width: 2;
+            }
+
+            35% {
+                stroke-width: 8;
+            }
+
+            100% {
+                stroke-width: 0;
+            }
         }
 
         @keyframes loaderSpin {
@@ -1192,6 +1353,16 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
         <div class="page-loader-visual">
             <img src="kvtlogo.png" alt="Laden" />
         </div>
+        <div class="loader-progress" id="loader-progress">
+            <div class="loader-progress-shell" id="loader-progress-shell">
+                <div class="loader-progress-fill" id="loader-progress-fill"></div>
+                <div class="loader-progress-tip"></div>
+                <svg class="loader-progress-spill" id="loader-progress-spill" viewBox="0 0 88 220" aria-hidden="true"
+                    focusable="false" preserveAspectRatio="none">
+                    <path d="M70 4 C 78 6, 84 14, 84 28 C 84 56, 84 96, 84 136 C 84 170, 84 196, 84 220" />
+                </svg>
+            </div>
+        </div>
         <div class="page-loader-text" id="page-loader-text"><?= htmlspecialchars($loadingTextInitial) ?></div>
     </div>
 
@@ -1200,20 +1371,154 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
         {
             const loaderEl = document.getElementById('page-loader');
             const loaderTextEl = document.getElementById('page-loader-text');
+            const loaderProgressShellEl = document.getElementById('loader-progress-shell');
+            const loaderProgressFillEl = document.getElementById('loader-progress-fill');
             const loadingTexts = <?= json_encode($loadingTextOptions, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
             if (!loaderEl)
             {
                 return;
             }
 
+            const fillDurationMs = 1000;
+            const tipFillDurationMs = 500;
+            const shakeRampMs = 1000;
+            const drainDurationMs = 2200;
+            let progressRunning = false;
+            let fillTimeoutId = null;
+            let tipFillTimeoutId = null;
+            let burstTimeoutId = null;
+            let shakeFrameId = null;
+            let shakeStartAt = 0;
+
             function showLoader ()
             {
                 loaderEl.classList.add('visible');
+                startProgressSequence();
             }
 
             function hideLoader ()
             {
                 loaderEl.classList.remove('visible');
+            }
+
+            function resetProgressSequence ()
+            {
+                if (fillTimeoutId !== null)
+                {
+                    window.clearTimeout(fillTimeoutId);
+                    fillTimeoutId = null;
+                }
+                if (tipFillTimeoutId !== null)
+                {
+                    window.clearTimeout(tipFillTimeoutId);
+                    tipFillTimeoutId = null;
+                }
+                if (burstTimeoutId !== null)
+                {
+                    window.clearTimeout(burstTimeoutId);
+                    burstTimeoutId = null;
+                }
+                if (shakeFrameId !== null)
+                {
+                    window.cancelAnimationFrame(shakeFrameId);
+                    shakeFrameId = null;
+                }
+
+                if (loaderProgressShellEl)
+                {
+                    loaderProgressShellEl.classList.remove('tip-fill', 'tip-burst', 'spilling');
+                    loaderProgressShellEl.style.transform = 'translate(0,0) rotate(0deg)';
+                }
+
+                if (loaderProgressFillEl)
+                {
+                    loaderProgressFillEl.style.transition = 'none';
+                    loaderProgressFillEl.style.width = '0%';
+                    loaderProgressFillEl.classList.remove('draining');
+                    loaderProgressFillEl.style.clipPath = 'inset(0 0 0 0)';
+                    void loaderProgressFillEl.offsetWidth;
+                }
+
+                progressRunning = false;
+            }
+
+            function runShakeRamp ()
+            {
+                if (!loaderProgressShellEl)
+                {
+                    return;
+                }
+
+                const now = performance.now();
+                const elapsed = now - shakeStartAt;
+                const progress = Math.max(0, Math.min(1, elapsed / shakeRampMs));
+                const amplitude = 0.2 + (6.5 * progress);
+                const x = (Math.random() * 2 - 1) * amplitude;
+                const y = (Math.random() * 2 - 1) * (amplitude * 0.55);
+                const rot = (Math.random() * 2 - 1) * (0.2 + progress * 2.2);
+                loaderProgressShellEl.style.transform = 'translate(' + x.toFixed(2) + 'px,' + y.toFixed(2) + 'px) rotate(' + rot.toFixed(2) + 'deg)';
+
+                if (progress < 1)
+                {
+                    shakeFrameId = window.requestAnimationFrame(runShakeRamp);
+                    return;
+                }
+
+                shakeFrameId = null;
+                loaderProgressShellEl.style.transform = 'translate(0,0) rotate(0deg)';
+                loaderProgressShellEl.classList.add('tip-burst', 'spilling');
+
+                if (loaderProgressFillEl)
+                {
+                    loaderProgressFillEl.style.transition = 'none';
+                    loaderProgressFillEl.classList.add('draining');
+                }
+
+                burstTimeoutId = window.setTimeout(function ()
+                {
+                    progressRunning = false;
+                }, drainDurationMs + 120);
+            }
+
+            function startProgressSequence ()
+            {
+                if (progressRunning)
+                {
+                    return;
+                }
+
+                resetProgressSequence();
+                progressRunning = true;
+
+                if (loaderProgressFillEl)
+                {
+                    loaderProgressFillEl.style.transition = 'width ' + fillDurationMs + 'ms linear';
+                    loaderProgressFillEl.style.width = '100%';
+                }
+
+                fillTimeoutId = window.setTimeout(function ()
+                {
+                    if (!progressRunning)
+                    {
+                        return;
+                    }
+
+                    if (loaderProgressShellEl)
+                    {
+                        loaderProgressShellEl.classList.add('tip-fill');
+                    }
+
+                    tipFillTimeoutId = window.setTimeout(function ()
+                    {
+                        if (!progressRunning)
+                        {
+                            return;
+                        }
+
+                        shakeStartAt = performance.now();
+                        shakeFrameId = window.requestAnimationFrame(runShakeRamp);
+                    }, tipFillDurationMs);
+                }, fillDurationMs);
             }
 
             function pickRandomLoadingText ()
@@ -1296,6 +1601,19 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
             window.addEventListener('beforeunload', function ()
             {
                 showLoader();
+            });
+
+            document.addEventListener('visibilitychange', function ()
+            {
+                if (document.visibilityState === 'hidden')
+                {
+                    return;
+                }
+
+                if (loaderEl.classList.contains('visible') && !progressRunning)
+                {
+                    startProgressSequence();
+                }
             });
 
             if (loaderTextEl && Array.isArray(loadingTexts) && loadingTexts.length > 0)
