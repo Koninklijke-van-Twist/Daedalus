@@ -299,7 +299,7 @@ function material_line_status(array $line): array
     $outstandingQty = (float) ($line['LVS_Outstanding_Qty_Base'] ?? 0);
 
     if ($completelyPicked || ($binCode !== '' && $qtyPicked > 0)) {
-        return ['label' => "In bin $binCode", 'class' => 'ok', 'detail' => $binCode !== '' ? 'Bin: ' . $binCode : $statusMaterial];
+        return ['label' => "In bin", 'class' => 'ok', 'detail' => $binCode !== '' ? 'Bin: ' . $binCode : $statusMaterial];
     }
 
     if ($purchaseOrderNo !== '' || $expectedReceiptDate !== '' || $outstandingQty > 0) {
