@@ -989,7 +989,7 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
         }
 
         .page-loader-text {
-            margin-top: 6px;
+            margin-top: -66px;
             max-width: min(320px, 86vw);
             text-align: center;
             color: #2d3e53;
@@ -1006,7 +1006,7 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
 
         .loader-progress {
             width: min(320px, 84vw);
-            margin-top: 58px;
+            margin-top: 298px;
             margin-bottom: 0;
             position: relative;
             z-index: 3;
@@ -1379,7 +1379,7 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
                 return;
             }
 
-            const fillDurationMs = 1000;
+            const fillDurationMs = 8000;
             const tipFillDurationMs = 500;
             const shakeRampMs = 1000;
             const drainDurationMs = 2200;
