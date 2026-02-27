@@ -35,6 +35,18 @@ function safe_text(?string $value, string $fallback = '-'): string
     return $trimmed === '' ? $fallback : $trimmed;
 }
 
+function bc_text_html(?string $value, string $fallback = '-'): string
+{
+    $text = safe_text($value, $fallback);
+    $escaped = htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
+
+    return str_ireplace(
+        ['&lt;br/&gt;', '&lt;br /&gt;', '&lt;br&gt;'],
+        '<br/>',
+        $escaped
+    );
+}
+
 function is_true_value($value): bool
 {
     if (is_bool($value)) {

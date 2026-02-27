@@ -30,7 +30,7 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
         $cached = read_cache_payload($cachePath, $ttlSeconds);
         if ($cached['valid']) {
             consolelog("Returning data.\n");
-            return $cached['data'];
+            return odata_normalize_text_newlines_recursive($cached['data']);
         }
 
         if ($cached['delete']) {
@@ -49,7 +49,12 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
             throw new Exception("OData response missing 'value' array");
         }
 
-        $all = array_merge($all, $resp['value']);
+        $chunk = odata_normalize_text_newlines_recursive($resp['value']);
+        if (!is_array($chunk)) {
+            throw new Exception("Failed to normalize OData payload");
+        }
+
+        $all = array_merge($all, $chunk);
         $next = $resp['@odata.nextLink'] ?? null;
         consolelog("Reading next chunk...\n");
     }
@@ -58,6 +63,28 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
     write_cache_json($cachePath, $all, $ttlSeconds, $url);
     consolelog("Done, returning data.\n");
     return $all;
+}
+
+function odata_normalize_text_newlines_recursive($value)
+{
+    if (is_array($value)) {
+        $normalized = [];
+        foreach ($value as $key => $entry) {
+            $normalized[$key] = odata_normalize_text_newlines_recursive($entry);
+        }
+
+        return $normalized;
+    }
+
+    if (!is_string($value)) {
+        return $value;
+    }
+
+    if (strpos($value, "\n") === false && strpos($value, "\r") === false) {
+        return $value;
+    }
+
+    return (string) preg_replace("/(\r\n|\r|\n)/", '<br/>', $value);
 }
 
 function odata_get_json(string $url, array $auth): array

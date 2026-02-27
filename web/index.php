@@ -84,6 +84,7 @@ $odataTtl = [
     'workorders_list' => 600_00,
     'workorder_detail' => 300_00,
     'planning_lines' => 300_00,
+    'item_task_flags' => 3600_00,
 ];
 
 $userEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
@@ -394,6 +395,153 @@ function is_task_article_line(array $line): bool
     }
 
     return false;
+}
+
+function fetch_item_task_flags_map(string $environment, string $company, array $itemNos, array $auth): array
+{
+    $normalizedNos = [];
+    foreach ($itemNos as $itemNo) {
+        $value = trim((string) $itemNo);
+        if ($value !== '') {
+            $normalizedNos[$value] = true;
+        }
+    }
+
+    $uniqueNos = array_keys($normalizedNos);
+    if (empty($uniqueNos)) {
+        return [];
+    }
+
+    $filter = build_or_filter('No', $uniqueNos);
+    if ($filter === '') {
+        return [];
+    }
+
+    $url = odata_company_url($environment, $company, 'AppItemCard', [
+        '$select' => 'No,LVS_Maintenance_Task_Item',
+        '$filter' => $filter,
+    ]);
+
+    $rows = odata_get_all($url, $auth, odata_ttl('item_task_flags'));
+    $result = [];
+    foreach ($rows as $row) {
+        $itemNo = trim((string) ($row['No'] ?? ''));
+        if ($itemNo === '') {
+            continue;
+        }
+
+        $result[$itemNo] = is_true_value($row['LVS_Maintenance_Task_Item'] ?? false);
+    }
+
+    return $result;
+}
+
+function split_task_article_lines(array $lines, array $itemTaskFlagsMap): array
+{
+    $taskLines = [];
+    $articleLines = [];
+
+    foreach ($lines as $line) {
+        $itemNo = trim((string) ($line['No'] ?? ''));
+        $isTaskItemByCard = $itemNo !== '' && !empty($itemTaskFlagsMap[$itemNo]);
+        $isTaskItem = $isTaskItemByCard || is_task_article_line($line);
+
+        if ($isTaskItem) {
+            $taskLines[] = $line;
+            continue;
+        }
+
+        $articleLines[] = $line;
+    }
+
+    return [
+        'task' => $taskLines,
+        'article' => $articleLines,
+    ];
+}
+
+function fetch_real_article_counts_for_workorders(
+    string $environment,
+    string $company,
+    array $workOrderNos,
+    array $auth
+): array {
+    $normalizedNos = [];
+    foreach ($workOrderNos as $workOrderNo) {
+        $value = trim((string) $workOrderNo);
+        if ($value !== '') {
+            $normalizedNos[$value] = true;
+        }
+    }
+
+    $uniqueNos = array_keys($normalizedNos);
+    $counts = [];
+    foreach ($uniqueNos as $workOrderNo) {
+        $counts[$workOrderNo] = 0;
+    }
+
+    if (empty($uniqueNos)) {
+        return $counts;
+    }
+
+    $allLines = [];
+    $itemNos = [];
+    $chunks = array_chunk($uniqueNos, 20);
+    foreach ($chunks as $chunkNos) {
+        $filter = build_or_filter('LVS_Work_Order_No', $chunkNos);
+        if ($filter === '') {
+            continue;
+        }
+
+        $url = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
+            '$select' => 'LVS_Work_Order_No,Type,No,KVT_Exclude_Calc_Workorder',
+            '$filter' => $filter,
+        ]);
+
+        $rows = odata_get_all($url, $auth, odata_ttl('planning_lines'));
+        foreach ($rows as $row) {
+            $type = strtolower(trim((string) ($row['Type'] ?? '')));
+            if ($type !== 'item' && $type !== 'artikel') {
+                continue;
+            }
+
+            $allLines[] = $row;
+
+            $itemNo = trim((string) ($row['No'] ?? ''));
+            if ($itemNo !== '') {
+                $itemNos[$itemNo] = true;
+            }
+        }
+    }
+
+    $itemTaskFlagsMap = fetch_item_task_flags_map($environment, $company, array_keys($itemNos), $auth);
+
+    foreach ($allLines as $line) {
+        $workOrderNo = trim((string) ($line['LVS_Work_Order_No'] ?? ''));
+        if ($workOrderNo === '' || !array_key_exists($workOrderNo, $counts)) {
+            continue;
+        }
+
+        $itemNo = trim((string) ($line['No'] ?? ''));
+        $isTaskItemByCard = $itemNo !== '' && !empty($itemTaskFlagsMap[$itemNo]);
+        $isTaskItem = $isTaskItemByCard || is_task_article_line($line);
+        if ($isTaskItem) {
+            continue;
+        }
+
+        $counts[$workOrderNo]++;
+    }
+
+    return $counts;
+}
+
+function material_needed_text(int $realArticleCount): string
+{
+    if ($realArticleCount <= 0) {
+        return 'Nee';
+    }
+
+    return 'Ja (' . $realArticleCount . ')';
 }
 
 function material_line_status(array $line): array
@@ -812,10 +960,10 @@ $errorMessage = '';
 $resourcesForUser = [];
 $serviceResources = [];
 $openWorkOrderCounts = [];
-$workOrderNoMaterialNeededMap = [];
+$workOrderRealArticleCounts = [];
 $workOrders = [];
 $selectedWorkOrder = null;
-$selectedWorkOrderNoMaterialNeeded = null;
+$selectedWorkOrderRealArticleCount = 0;
 $taskArticleLines = [];
 $planningLines = [];
 $availableWorkorderStatuses = [];
@@ -957,13 +1105,6 @@ try {
     }
 
     if ($selectedResourceNo !== '') {
-        $workOrderNoMaterialNeededMap = fetch_werkorders_no_material_needed_map(
-            $environment,
-            $company,
-            $selectedResourceNo,
-            $auth
-        );
-
         $workOrders = fetch_app_workorders_chunked(
             $environment,
             $company,
@@ -1042,22 +1183,22 @@ try {
         usort($workOrders, static function (array $left, array $right): int {
             return strcmp(workorder_sort_key($left), workorder_sort_key($right));
         });
+
+        $workOrderNosForCounts = array_map(
+            static fn(array $workOrder): string => trim((string) ($workOrder['No'] ?? '')),
+            $workOrders
+        );
+        $workOrderRealArticleCounts = fetch_real_article_counts_for_workorders(
+            $environment,
+            $company,
+            $workOrderNosForCounts,
+            $auth
+        );
     }
 
     if ($selectedWorkOrderNo !== '') {
-        if (isset($workOrderNoMaterialNeededMap[$selectedWorkOrderNo])) {
-            $selectedWorkOrderNoMaterialNeeded = (bool) $workOrderNoMaterialNeededMap[$selectedWorkOrderNo];
-        } else {
-            $selectedWorkOrderNoMaterialNeeded = fetch_werkorder_no_material_needed_by_no(
-                $environment,
-                $company,
-                $selectedWorkOrderNo,
-                $auth
-            );
-        }
-
         $selectedUrl = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,End_Date,External_Document_No,KVT_Lowest_Present_Status_Mat,KVT_Status_Purchase_Order,Job_No,Job_Task_No,KVT_Memo_Service_Location,KVT_Memo_Component,KVT_Memo_Internal_Use_Only',
+            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,End_Date,External_Document_No,KVT_Lowest_Present_Status_Mat,KVT_Status_Purchase_Order,Job_No,Job_Task_No,KVT_Memo_Service_Location,KVT_Memo_Component,KVT_Memo,KVT_Memo_Internal_Use_Only',
             '$filter' => "No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
         ]);
         $selectedRows = odata_get_all($selectedUrl, $auth, odata_ttl('workorder_detail'));
@@ -1074,8 +1215,20 @@ try {
                 $type = strtolower(trim((string) ($line['Type'] ?? '')));
                 return $type === 'item' || $type === 'artikel';
             }));
-            $taskArticleLines = array_values(array_filter($planningLines, static fn(array $line): bool => is_task_article_line($line)));
-            $planningLines = array_values(array_filter($planningLines, static fn(array $line): bool => !is_task_article_line($line)));
+
+            $itemNos = [];
+            foreach ($planningLines as $line) {
+                $itemNo = trim((string) ($line['No'] ?? ''));
+                if ($itemNo !== '') {
+                    $itemNos[] = $itemNo;
+                }
+            }
+
+            $itemTaskFlagsMap = fetch_item_task_flags_map($environment, $company, $itemNos, $auth);
+            $splitLines = split_task_article_lines($planningLines, $itemTaskFlagsMap);
+            $taskArticleLines = $splitLines['task'];
+            $planningLines = $splitLines['article'];
+            $selectedWorkOrderRealArticleCount = count($planningLines);
         }
     }
 } catch (Throwable $throwable) {
@@ -1960,25 +2113,40 @@ foreach ($statusCatalog as $statusValue) {
         <?php if ($selectedWorkOrder !== null): ?>
             <section class="detail-head">
                 <a href="<?= htmlspecialchars($listHref) ?>" class="back" data-nav-link>← Terug naar werkorders</a>
-                <p class="wo-no">Werkorder <?= htmlspecialchars(safe_text((string) ($selectedWorkOrder['No'] ?? ''))) ?></p>
+                <p class="wo-no">Werkorder <?= bc_text_html((string) ($selectedWorkOrder['No'] ?? '')) ?></p>
                 <h1 class="title">
-                    <?= htmlspecialchars(workorder_task_text($selectedWorkOrder)) ?>
+                    <?= bc_text_html(workorder_task_text($selectedWorkOrder)) ?>
                 </h1>
                 <p class="subtitle">
                     Uitvoerdatum: <?= htmlspecialchars(nl_date((string) ($selectedWorkOrder['Start_Date'] ?? ''))) ?>
-                    · Monteur: <?= htmlspecialchars(safe_text((string) ($selectedWorkOrder['Resource_Name'] ?? ''))) ?>
+                    · Monteur: <?= bc_text_html((string) ($selectedWorkOrder['Resource_Name'] ?? '')) ?>
                 </p>
                 <div class="meta">
                     Object:
-                    <?= htmlspecialchars(safe_text((string) ($selectedWorkOrder['Main_Entity_Description'] ?? ''))) ?><br />
+                    <?= bc_text_html((string) ($selectedWorkOrder['Main_Entity_Description'] ?? '')) ?><br />
                     Component:
-                    <?= htmlspecialchars(safe_text((string) ($selectedWorkOrder['Component_Description'] ?? ''))) ?><br />
+                    <?= bc_text_html((string) ($selectedWorkOrder['Component_Description'] ?? '')) ?><br />
                     Materiaal nodig:
-                    <?= htmlspecialchars($selectedWorkOrderNoMaterialNeeded === true ? 'Nee' : 'Ja') ?><br />
-                    Materiaal (header):
-                    <?= htmlspecialchars(material_status_label((string) ($selectedWorkOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?><br />
-                    Memo intern gebruik:
-                    <?= htmlspecialchars(safe_text((string) ($selectedWorkOrder['KVT_Memo_Internal_Use_Only'] ?? ''))) ?>
+                    <?= htmlspecialchars(material_needed_text($selectedWorkOrderRealArticleCount)) ?><br />
+                    <?php if ($selectedWorkOrderRealArticleCount > 0): ?>
+                        Materiaal (header):
+                        <?= htmlspecialchars(material_status_label((string) ($selectedWorkOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?><br />
+                    <?php endif; ?><br/>
+                    <?php
+                    $omschrijvingParts = [];
+                    $memoText = trim((string) ($selectedWorkOrder['KVT_Memo'] ?? ''));
+                    $memoInternalText = trim((string) ($selectedWorkOrder['KVT_Memo_Internal_Use_Only'] ?? ''));
+                    if ($memoText !== '') {
+                        $omschrijvingParts[] = bc_text_html($memoText, '');
+                    }
+                    if ($memoInternalText !== '') {
+                        $omschrijvingParts[] = bc_text_html($memoInternalText, '');
+                    }
+                    ?>
+                    <?php if (!empty($omschrijvingParts)): ?>
+                        <b>Omschrijving:</b><br/>
+                        <?= implode('<br/><br/>', $omschrijvingParts) ?>
+                    <?php endif; ?>
                 </div>
             </section>
 
@@ -1988,10 +2156,10 @@ foreach ($statusCatalog as $statusValue) {
                     <?php foreach ($taskArticleLines as $line): ?>
                         <?php $taskExtendedText = trim((string) ($line['KVT_Extended_Text'] ?? '')); ?>
                         <article class="card">
-                            <p class="line-name"><?= htmlspecialchars(safe_text((string) ($line['Description'] ?? ''))) ?></p>
+                            <p class="line-name"><?= bc_text_html((string) ($line['Description'] ?? '')) ?></p>
                             <?php if ($taskExtendedText !== ''): ?>
                                 <div class="line-desc">
-                                    <?= htmlspecialchars($taskExtendedText) ?>
+                                    <?= bc_text_html($taskExtendedText, '') ?>
                                 </div>
                             <?php endif; ?>
                         </article>
@@ -2010,17 +2178,17 @@ foreach ($statusCatalog as $statusValue) {
                         <?php $extendedText = trim((string) ($line['KVT_Extended_Text'] ?? '')); ?>
                         <article class="card">
                             <div class="row">
-                                <p class="line-name"><?= htmlspecialchars(safe_text((string) ($line['Description'] ?? ''))) ?></p>
+                                <p class="line-name"><?= bc_text_html((string) ($line['Description'] ?? '')) ?></p>
                                 <span
                                     class="badge <?= htmlspecialchars($lineStatus['class']) ?>"><?= htmlspecialchars($lineStatus['label']) ?></span>
                             </div>
                             <div class="meta">
                                 Aantal: <?= htmlspecialchars((string) ($line['Quantity'] ?? '0')) ?>
-                                <?= htmlspecialchars(safe_text((string) ($line['Unit_of_Measure_Code'] ?? ''), '')) ?>
+                                <?= bc_text_html((string) ($line['Unit_of_Measure_Code'] ?? ''), '') ?>
                             </div>
                             <?php if ($extendedText !== ''): ?>
                                 <div class="line-desc">
-                                    <?= htmlspecialchars($extendedText) ?>
+                                    <?= bc_text_html($extendedText, '') ?>
                                 </div>
                             <?php endif; ?>
                             <div class="status-material-label">
@@ -2047,7 +2215,7 @@ foreach ($statusCatalog as $statusValue) {
                         $workOrderHrefParams['workorder'] = (string) ($workOrder['No'] ?? '');
                         $workOrderHref = 'index.php?' . http_build_query($workOrderHrefParams, '', '&', PHP_QUERY_RFC3986);
                         $workOrderNo = (string) ($workOrder['No'] ?? '');
-                        $noMaterialNeeded = (bool) ($workOrderNoMaterialNeededMap[$workOrderNo] ?? false);
+                        $realArticleCount = (int) ($workOrderRealArticleCounts[$workOrderNo] ?? 0);
                         $workOrderStatusText = safe_text((string) ($workOrder['Status'] ?? ''));
                         $workOrderStatusClass = status_css_class((string) ($workOrder['Status'] ?? ''));
                         $workOrderBadgeClass = $workOrderStatusClass !== '' ? ('badge ' . $workOrderStatusClass) : 'badge neutral';
@@ -2055,10 +2223,10 @@ foreach ($statusCatalog as $statusValue) {
                         <a class="card" href="<?= htmlspecialchars($workOrderHref) ?>" data-nav-link>
                             <div class="row">
                                 <div>
-                                    <p class="wo-no">Werkorder <?= htmlspecialchars(safe_text((string) ($workOrder['No'] ?? ''))) ?>
+                                    <p class="wo-no">Werkorder <?= bc_text_html((string) ($workOrder['No'] ?? '')) ?>
                                     </p>
                                     <h2 class="wo-task">
-                                        <?= htmlspecialchars(workorder_task_text($workOrder)) ?>
+                                        <?= bc_text_html(workorder_task_text($workOrder)) ?>
                                     </h2>
                                 </div>
                                 <span
@@ -2067,12 +2235,14 @@ foreach ($statusCatalog as $statusValue) {
                             <div class="meta">
                                 Uitvoerdatum: <?= htmlspecialchars(nl_date((string) ($workOrder['Start_Date'] ?? ''))) ?><br />
                                 Object:
-                                <?= htmlspecialchars(safe_text((string) ($workOrder['Main_Entity_Description'] ?? ''))) ?><br />
+                                <?= bc_text_html((string) ($workOrder['Main_Entity_Description'] ?? '')) ?><br />
                                 Component:
-                                <?= htmlspecialchars(safe_text((string) ($workOrder['Component_Description'] ?? ''))) ?><br />
-                                Materiaal nodig: <?= htmlspecialchars($noMaterialNeeded ? 'Nee' : 'Ja') ?><br />
-                                Materiaal:
-                                <?= htmlspecialchars(material_status_label((string) ($workOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?>
+                                <?= bc_text_html((string) ($workOrder['Component_Description'] ?? '')) ?><br />
+                                Materiaal nodig: <?= htmlspecialchars(material_needed_text($realArticleCount)) ?><br />
+                                <?php if ($realArticleCount > 0): ?>
+                                    Materiaal:
+                                    <?= htmlspecialchars(material_status_label((string) ($workOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?>
+                                <?php endif; ?>
                             </div>
                         </a>
                     <?php endforeach; ?>
