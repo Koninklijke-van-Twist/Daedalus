@@ -921,10 +921,10 @@ try {
         $userStatusFilters = ensure_user_status_filters($userEmail, $statusCatalog);
 
         if ($hasStatusFiltersRequest && $statusFiltersRequest !== '') {
-            foreach ($availableWorkorderStatuses as $statusValue) {
-                $userStatusFilters[$statusValue] = isset($submittedStatusFilters[$statusValue])
-                    ? (bool) $submittedStatusFilters[$statusValue]
-                    : false;
+            foreach ($statusCatalog as $statusValue) {
+                if (array_key_exists($statusValue, $submittedStatusFilters)) {
+                    $userStatusFilters[$statusValue] = (bool) $submittedStatusFilters[$statusValue];
+                }
             }
 
             write_json_assoc_file(user_status_filters_path($userEmail), $userStatusFilters);
@@ -1012,7 +1012,7 @@ $resourceCountsUrl = 'index.php?' . http_build_query([
 ], '', '&', PHP_QUERY_RFC3986);
 
 $statusFiltersForModal = [];
-foreach ($availableWorkorderStatuses as $statusValue) {
+foreach ($statusCatalog as $statusValue) {
     $statusFiltersForModal[$statusValue] = array_key_exists($statusValue, $userStatusFilters)
         ? (bool) $userStatusFilters[$statusValue]
         : status_enabled_default($statusValue);
@@ -1024,7 +1024,7 @@ if (!is_string($statusFiltersPayloadValue)) {
 }
 
 $activeStatusFilters = [];
-foreach ($availableWorkorderStatuses as $statusValue) {
+foreach ($statusCatalog as $statusValue) {
     if (!empty($statusFiltersForModal[$statusValue])) {
         $activeStatusFilters[] = $statusValue;
     }
@@ -1802,7 +1802,8 @@ foreach ($availableWorkorderStatuses as $statusValue) {
                 <div class="active-filter-chips">
                     <?php foreach ($activeStatusFilters as $activeStatus): ?>
                         <?php $activeStatusClass = status_css_class($activeStatus); ?>
-                        <span class="active-filter-chip <?= htmlspecialchars($activeStatusClass) ?>" title="<?= htmlspecialchars($activeStatus) ?>"
+                        <span class="active-filter-chip <?= htmlspecialchars($activeStatusClass) ?>"
+                            title="<?= htmlspecialchars($activeStatus) ?>"
                             aria-label="<?= htmlspecialchars($activeStatus) ?>"></span>
                     <?php endforeach; ?>
                 </div>
@@ -1818,10 +1819,10 @@ foreach ($availableWorkorderStatuses as $statusValue) {
                 <h2 id="status-modal-title" class="status-modal-title">Statusfilter</h2>
                 <p class="status-modal-subtitle">Toon alleen werkorders met deze statussen.</p>
                 <div class="status-modal-list">
-                    <?php if (count($availableWorkorderStatuses) === 0): ?>
+                    <?php if (count($statusCatalog) === 0): ?>
                         <div class="empty">Geen statussen beschikbaar.</div>
                     <?php else: ?>
-                        <?php foreach ($availableWorkorderStatuses as $statusOption): ?>
+                        <?php foreach ($statusCatalog as $statusOption): ?>
                             <?php
                             $statusCount = (int) ($workOrderStatusCounts[$statusOption] ?? 0);
                             $statusEnabled = array_key_exists($statusOption, $statusFiltersForModal)
@@ -1832,7 +1833,8 @@ foreach ($availableWorkorderStatuses as $statusValue) {
                             <label class="status-filter-item">
                                 <input type="checkbox" class="status-filter-checkbox"
                                     data-status="<?= htmlspecialchars($statusOption) ?>" <?= $statusEnabled ? 'checked' : '' ?> />
-                                <span class="status-filter-label <?= htmlspecialchars($statusOptionClass) ?>"><?= htmlspecialchars($statusOption . ' (' . $statusCount . ')') ?></span>
+                                <span
+                                    class="status-filter-label <?= htmlspecialchars($statusOptionClass) ?>"><?= htmlspecialchars($statusOption . ' (' . $statusCount . ')') ?></span>
                             </label>
                         <?php endforeach; ?>
                     <?php endif; ?>
@@ -2239,7 +2241,7 @@ foreach ($availableWorkorderStatuses as $statusValue) {
             const statusFilterCheckboxEls = Array.from(document.querySelectorAll('.status-filter-checkbox'));
             const statusCloseEls = Array.from(document.querySelectorAll('[data-status-close]'));
 
-            function closeStatusModal()
+            function closeStatusModal ()
             {
                 if (!statusModalEl)
                 {
@@ -2248,7 +2250,7 @@ foreach ($availableWorkorderStatuses as $statusValue) {
                 statusModalEl.hidden = true;
             }
 
-            function openStatusModal()
+            function openStatusModal ()
             {
                 if (!statusModalEl)
                 {
