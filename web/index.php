@@ -37,6 +37,19 @@ register_shutdown_function(function () {
     echo '</body></html>';
 });
 
+$statuses = [
+    "O" => "Onbekend", //nog niet gecontroleerd
+    "N" => "Niet nodig", //geen materiaal nodig voor order
+    "X" => "Niet op tijd", //1 of meerdere materialen en/of gereedschap
+    "T" => "Te laat", //inkooporder is (net) te laat
+    "I" => "Inkooporder aanwezig", //Inkooporder is er en is op tijd
+    "V" => "Voorraad", //Is gereserveerd in voorraad
+    "G" => "Gepicked", //Zijn uitgezocht en in de juiste bak gelegd
+    "B" => "Uitgegeven", //De blauwe bak is vanuit magazijn uitgegeven aan de service engineer
+    "A" => "Aangenomen", //Aangenomen door Service Engineer en gecontroleerd
+    "C" => "Gecontroleerd" //SE heeft controle uitgevoerd op verbruik materiaal en geboekt
+];
+
 $loadingTextOptions = [];
 $loadingTextInitial = '';
 $loadingTextsPath = __DIR__ . '/loadingTexts.php';
@@ -331,9 +344,61 @@ function workorder_sort_key(array $row): string
     return '9999-12-31';
 }
 
+function material_status_label(string $status): string
+{
+    global $statuses;
+
+    $raw = trim($status);
+    if ($raw === '') {
+        return 'Onbekend';
+    }
+
+    $code = strtoupper($raw);
+    if (isset($statuses[$code])) {
+        return (string) $statuses[$code];
+    }
+
+    return $raw;
+}
+
+function workorder_task_text(array $workOrder): string
+{
+    $taskDescription = trim((string) ($workOrder['Task_Description'] ?? ''));
+    if ($taskDescription !== '') {
+        return $taskDescription;
+    }
+
+    $taskCode = trim((string) ($workOrder['Task_Code'] ?? ''));
+    if ($taskCode !== '') {
+        return $taskCode;
+    }
+
+    return '-';
+}
+
+function is_task_article_line(array $line): bool
+{
+    $taskArticleFields = [
+        'Taakartikel',
+        'Taak_Artikel',
+        'Task_Article',
+        'KVT_Task_Article',
+        'KVT_Taakartikel',
+        'KVT_Exclude_Calc_Workorder',
+    ];
+
+    foreach ($taskArticleFields as $field) {
+        if (array_key_exists($field, $line) && is_true_value($line[$field])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function material_line_status(array $line): array
 {
-    $statusMaterial = safe_text((string) ($line['KVT_Status_Material'] ?? ''), 'Onbekend');
+    $statusMaterial = material_status_label((string) ($line['KVT_Status_Material'] ?? ''));
     $binCode = trim((string) ($line['Bin_Code'] ?? ''));
     $completelyPicked = is_true_value($line['KVT_Completely_Picked'] ?? false);
     $qtyPicked = (float) ($line['KVT_Qty_Picked'] ?? 0);
@@ -342,7 +407,12 @@ function material_line_status(array $line): array
     $outstandingQty = (float) ($line['LVS_Outstanding_Qty_Base'] ?? 0);
 
     if ($completelyPicked || ($binCode !== '' && $qtyPicked > 0)) {
-        return ['label' => "In bin", 'class' => 'ok', 'detail' => $binCode !== '' ? 'Bin: ' . $binCode : $statusMaterial];
+        return [
+            'label' => "In bin",
+            'class' => 'ok',
+            'material_status_label' => $statusMaterial,
+            'detail' => $binCode !== '' ? 'Bin: ' . $binCode : $statusMaterial,
+        ];
     }
 
     if ($purchaseOrderNo !== '' || $expectedReceiptDate !== '' || $outstandingQty > 0) {
@@ -368,14 +438,29 @@ function material_line_status(array $line): array
         }
 
         if ($hasKnownExpectedDate) {
-            return ['label' => 'In bestelling', 'class' => 'warn', 'detail' => implode(' · ', $detailParts)];
+            return [
+                'label' => 'In bestelling',
+                'class' => 'warn',
+                'material_status_label' => $statusMaterial,
+                'detail' => implode(' · ', $detailParts),
+            ];
         }
 
-        return ['label' => 'Onbekend', 'class' => 'unknown', 'detail' => implode(' · ', $detailParts)];
+        return [
+            'label' => 'Onbekend',
+            'class' => 'unknown',
+            'material_status_label' => $statusMaterial,
+            'detail' => implode(' · ', $detailParts),
+        ];
     }
 
     $fallbackClass = strtolower($statusMaterial) === 'onbekend' ? 'unknown' : 'neutral';
-    return ['label' => $statusMaterial, 'class' => $fallbackClass, 'detail' => $binCode !== '' ? 'Bin: ' . $binCode : '-'];
+    return [
+        'label' => $statusMaterial,
+        'class' => $fallbackClass,
+        'material_status_label' => $statusMaterial,
+        'detail' => $binCode !== '' ? 'Bin: ' . $binCode : '-',
+    ];
 }
 
 function is_open_workorder_status(string $status): bool
@@ -731,6 +816,7 @@ $workOrderNoMaterialNeededMap = [];
 $workOrders = [];
 $selectedWorkOrder = null;
 $selectedWorkOrderNoMaterialNeeded = null;
+$taskArticleLines = [];
 $planningLines = [];
 $availableWorkorderStatuses = [];
 $workOrderStatusCounts = [];
@@ -971,7 +1057,7 @@ try {
         }
 
         $selectedUrl = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,End_Date,External_Document_No,KVT_Lowest_Present_Status_Mat,KVT_Status_Purchase_Order,Job_No,Job_Task_No,KVT_Memo_Service_Location,KVT_Memo_Component',
+            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,End_Date,External_Document_No,KVT_Lowest_Present_Status_Mat,KVT_Status_Purchase_Order,Job_No,Job_Task_No,KVT_Memo_Service_Location,KVT_Memo_Component,KVT_Memo_Internal_Use_Only',
             '$filter' => "No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
         ]);
         $selectedRows = odata_get_all($selectedUrl, $auth, odata_ttl('workorder_detail'));
@@ -979,7 +1065,7 @@ try {
 
         if ($selectedWorkOrder !== null) {
             $linesUrl = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
-                '$select' => 'Line_No,Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Completely_Picked,KVT_Qty_Picked,KVT_Expected_Receipt_Date,LVS_Purchase_Order_No,LVS_Outstanding_Qty_Base,Planning_Date,LVS_Vendor_Name,LVS_Supply_from',
+                '$select' => 'Line_No,Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Completely_Picked,KVT_Qty_Picked,KVT_Expected_Receipt_Date,LVS_Purchase_Order_No,LVS_Outstanding_Qty_Base,Planning_Date,LVS_Vendor_Name,LVS_Supply_from,KVT_Exclude_Calc_Workorder',
                 '$filter' => "LVS_Work_Order_No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
                 '$orderby' => 'Line_No asc',
             ]);
@@ -988,6 +1074,8 @@ try {
                 $type = strtolower(trim((string) ($line['Type'] ?? '')));
                 return $type === 'item' || $type === 'artikel';
             }));
+            $taskArticleLines = array_values(array_filter($planningLines, static fn(array $line): bool => is_task_article_line($line)));
+            $planningLines = array_values(array_filter($planningLines, static fn(array $line): bool => !is_task_article_line($line)));
         }
     }
 } catch (Throwable $throwable) {
@@ -1107,7 +1195,7 @@ foreach ($statusCatalog as $statusValue) {
         }
 
         .status-open {
-            background: #ffffff;
+            background: #d1d1d1;
         }
 
         .status-getekend {
@@ -1115,11 +1203,11 @@ foreach ($statusCatalog as $statusValue) {
         }
 
         .status-uitgevoerd {
-            background: #e9f9ee;
+            background: #efd4ff;
         }
 
         .status-gecontroleerd {
-            background: #fff1dd;
+            background: #fff8cf;
         }
 
         .status-geannuleerd {
@@ -1127,15 +1215,19 @@ foreach ($statusCatalog as $statusValue) {
         }
 
         .status-afgesloten {
-            background: #c5c5c5;
+            background: #948d8d;
         }
 
         .status-gepland {
-            background: #ddefff;
+            background: #d4ffda;
         }
 
         .status-onderhanden {
-            background: #ffe9e9;
+            background: #ffeedd;
+        }
+
+        .status-gefactureerd {
+            background: #8ec9ba;
         }
 
         .badge.status-open,
@@ -1146,6 +1238,7 @@ foreach ($statusCatalog as $statusValue) {
         .badge.status-afgesloten,
         .badge.status-gepland,
         .badge.status-onderhanden,
+        .badge.status-gefactureerd,
         .active-filter-chip.status-open,
         .active-filter-chip.status-getekend,
         .active-filter-chip.status-uitgevoerd,
@@ -1153,14 +1246,15 @@ foreach ($statusCatalog as $statusValue) {
         .active-filter-chip.status-geannuleerd,
         .active-filter-chip.status-afgesloten,
         .active-filter-chip.status-gepland,
-        .active-filter-chip.status-onderhanden {
+        .active-filter-chip.status-onderhanden,
+        .active-filter-chip.status-gefactureerd {
             color: var(--text);
             border-color: #cfd8e2;
         }
 
         .badge.status-open,
         .active-filter-chip.status-open {
-            background: #ffffff;
+            background: #d1d1d1;
         }
 
         .badge.status-getekend,
@@ -1170,12 +1264,12 @@ foreach ($statusCatalog as $statusValue) {
 
         .badge.status-uitgevoerd,
         .active-filter-chip.status-uitgevoerd {
-            background: #e9f9ee;
+            background: #efd4ff;
         }
 
         .badge.status-gecontroleerd,
         .active-filter-chip.status-gecontroleerd {
-            background: #fff1dd;
+            background: #fff8cf;
         }
 
         .badge.status-geannuleerd,
@@ -1185,17 +1279,22 @@ foreach ($statusCatalog as $statusValue) {
 
         .badge.status-afgesloten,
         .active-filter-chip.status-afgesloten {
-            background: #c5c5c5;
+            background: #948d8d;
         }
 
         .badge.status-gepland,
         .active-filter-chip.status-gepland {
-            background: #ddefff;
+            background: #d4ffda;
         }
 
         .badge.status-onderhanden,
         .active-filter-chip.status-onderhanden {
-            background: #ffe9e9;
+            background: #ffeedd;
+        }
+
+        .badge.status-gefactureerd,
+        .active-filter-chip.status-gefactureerd {
+            background: #8ec9ba;
         }
 
         .wo-list,
@@ -1226,8 +1325,9 @@ foreach ($statusCatalog as $statusValue) {
         }
 
         .wo-no {
-            font-size: .85rem;
-            color: var(--muted);
+            font-size: .95rem;
+            font-weight: 700;
+            color: var(--text);
             margin: 0 0 2px;
         }
 
@@ -1311,6 +1411,13 @@ foreach ($statusCatalog as $statusValue) {
             margin-top: 5px;
             color: var(--muted);
             font-size: .8rem;
+        }
+
+        .status-material-label {
+            margin-top: 5px;
+            color: var(--text);
+            font-size: .82rem;
+            font-weight: 600;
         }
 
         .empty {
@@ -1855,7 +1962,7 @@ foreach ($statusCatalog as $statusValue) {
                 <a href="<?= htmlspecialchars($listHref) ?>" class="back" data-nav-link>← Terug naar werkorders</a>
                 <p class="wo-no">Werkorder <?= htmlspecialchars(safe_text((string) ($selectedWorkOrder['No'] ?? ''))) ?></p>
                 <h1 class="title">
-                    <?= htmlspecialchars(safe_text((string) ($selectedWorkOrder['Task_Description'] ?? ''))) ?>
+                    <?= htmlspecialchars(workorder_task_text($selectedWorkOrder)) ?>
                 </h1>
                 <p class="subtitle">
                     Uitvoerdatum: <?= htmlspecialchars(nl_date((string) ($selectedWorkOrder['Start_Date'] ?? ''))) ?>
@@ -1869,9 +1976,28 @@ foreach ($statusCatalog as $statusValue) {
                     Materiaal nodig:
                     <?= htmlspecialchars($selectedWorkOrderNoMaterialNeeded === true ? 'Nee' : 'Ja') ?><br />
                     Materiaal (header):
-                    <?= htmlspecialchars(safe_text((string) ($selectedWorkOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?>
+                    <?= htmlspecialchars(material_status_label((string) ($selectedWorkOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?><br />
+                    Memo intern gebruik:
+                    <?= htmlspecialchars(safe_text((string) ($selectedWorkOrder['KVT_Memo_Internal_Use_Only'] ?? ''))) ?>
                 </div>
             </section>
+
+            <?php if (count($taskArticleLines) > 0): ?>
+                <h2 class="title">Taakomschrijving:</h2>
+                <section class="line-list">
+                    <?php foreach ($taskArticleLines as $line): ?>
+                        <?php $taskExtendedText = trim((string) ($line['KVT_Extended_Text'] ?? '')); ?>
+                        <article class="card">
+                            <p class="line-name"><?= htmlspecialchars(safe_text((string) ($line['Description'] ?? ''))) ?></p>
+                            <?php if ($taskExtendedText !== ''): ?>
+                                <div class="line-desc">
+                                    <?= htmlspecialchars($taskExtendedText) ?>
+                                </div>
+                            <?php endif; ?>
+                        </article>
+                    <?php endforeach; ?>
+                </section>
+            <?php endif; ?>
 
             <h2 class="title">Artikelen:</h2>
 
@@ -1897,6 +2023,9 @@ foreach ($statusCatalog as $statusValue) {
                                     <?= htmlspecialchars($extendedText) ?>
                                 </div>
                             <?php endif; ?>
+                            <div class="status-material-label">
+                                Materiaalstatus: <?= htmlspecialchars(safe_text((string) ($lineStatus['material_status_label'] ?? 'Onbekend'))) ?>
+                            </div>
                             <div class="status-detail"><?= htmlspecialchars($lineStatus['detail']) ?></div>
                         </article>
                     <?php endforeach; ?>
@@ -1929,7 +2058,7 @@ foreach ($statusCatalog as $statusValue) {
                                     <p class="wo-no">Werkorder <?= htmlspecialchars(safe_text((string) ($workOrder['No'] ?? ''))) ?>
                                     </p>
                                     <h2 class="wo-task">
-                                        <?= htmlspecialchars(safe_text((string) ($workOrder['Task_Description'] ?? ''))) ?>
+                                        <?= htmlspecialchars(workorder_task_text($workOrder)) ?>
                                     </h2>
                                 </div>
                                 <span
@@ -1943,7 +2072,7 @@ foreach ($statusCatalog as $statusValue) {
                                 <?= htmlspecialchars(safe_text((string) ($workOrder['Component_Description'] ?? ''))) ?><br />
                                 Materiaal nodig: <?= htmlspecialchars($noMaterialNeeded ? 'Nee' : 'Ja') ?><br />
                                 Materiaal:
-                                <?= htmlspecialchars(safe_text((string) ($workOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?>
+                                <?= htmlspecialchars(material_status_label((string) ($workOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?>
                             </div>
                         </a>
                     <?php endforeach; ?>
