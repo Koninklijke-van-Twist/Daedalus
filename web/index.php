@@ -363,6 +363,33 @@ function material_status_label(string $status): string
     return $raw;
 }
 
+function material_status_code(string $status): string
+{
+    global $statuses;
+
+    $raw = trim($status);
+    if ($raw === '') {
+        return '';
+    }
+
+    $upperRaw = strtoupper($raw);
+    if (isset($statuses[$upperRaw])) {
+        return $upperRaw;
+    }
+
+    foreach ($statuses as $code => $label) {
+        if (strcasecmp(trim((string) $label), $raw) === 0) {
+            return strtoupper((string) $code);
+        }
+    }
+
+    if (preg_match('/^\s*([A-Za-z])\s*(?:$|[-:]).*$/', $raw, $matches) === 1) {
+        return strtoupper((string) ($matches[1] ?? ''));
+    }
+
+    return '';
+}
+
 function workorder_task_text(array $workOrder): string
 {
     $taskDescription = trim((string) ($workOrder['Task_Description'] ?? ''));
@@ -678,7 +705,9 @@ function material_needed_text(int $realArticleCount): string
 
 function material_line_status(array $line): array
 {
-    $statusMaterial = material_status_label((string) ($line['KVT_Status_Material'] ?? ''));
+    $statusRaw = (string) ($line['KVT_Status_Material'] ?? '');
+    $statusMaterial = material_status_label($statusRaw);
+    $statusCode = material_status_code($statusRaw);
     $binCode = trim((string) ($line['Bin_Code'] ?? ''));
     $binLocationCode = trim((string) ($line['KVT_Bin_Location_Code'] ?? ''));
     $binDetail = '';
@@ -693,6 +722,33 @@ function material_line_status(array $line): array
     $purchaseOrderNo = trim((string) ($line['LVS_Purchase_Order_No'] ?? ''));
     $expectedReceiptDate = trim((string) ($line['KVT_Expected_Receipt_Date'] ?? ''));
     $outstandingQty = (float) ($line['LVS_Outstanding_Qty_Base'] ?? 0);
+
+    if (in_array($statusCode, ['V', 'G', 'B'], true)) {
+        return [
+            'label' => $statusMaterial,
+            'class' => 'ok',
+            'material_status_label' => $statusMaterial,
+            'detail' => $binDetail !== '' ? $binDetail : 'Bin onbekend',
+        ];
+    }
+
+    if (in_array($statusCode, ['A', 'C'], true)) {
+        return [
+            'label' => $statusMaterial,
+            'class' => 'neutral',
+            'material_status_label' => $statusMaterial,
+            'detail' => 'In handen van servicemonteur',
+        ];
+    }
+
+    if ($statusCode === 'N') {
+        return [
+            'label' => $statusMaterial,
+            'class' => 'neutral',
+            'material_status_label' => $statusMaterial,
+            'detail' => 'Geen materiaal nodig',
+        ];
+    }
 
     if ($completelyPicked || ($binCode !== '' && $qtyPicked > 0)) {
         return [
