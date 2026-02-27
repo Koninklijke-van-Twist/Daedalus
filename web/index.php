@@ -85,6 +85,7 @@ $odataTtl = [
     'workorder_detail' => 300_00,
     'planning_lines' => 300_00,
     'item_task_flags' => 3600_00,
+    'bin_lookup' => 1800_00,
 ];
 
 $userEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
@@ -460,6 +461,137 @@ function split_task_article_lines(array $lines, array $itemTaskFlagsMap): array
     ];
 }
 
+function fetch_bin_location_maps(string $environment, string $company, array $lines, array $auth): array
+{
+    $binCodes = [];
+    $itemNos = [];
+
+    foreach ($lines as $line) {
+        $binCode = trim((string) ($line['Bin_Code'] ?? ''));
+        if ($binCode === '') {
+            continue;
+        }
+
+        $binCodes[$binCode] = true;
+
+        $itemNo = trim((string) ($line['No'] ?? ''));
+        if ($itemNo !== '') {
+            $itemNos[$itemNo] = true;
+        }
+    }
+
+    $uniqueBinCodes = array_keys($binCodes);
+    if (empty($uniqueBinCodes)) {
+        return ['by_pair' => [], 'by_bin' => []];
+    }
+
+    $byPair = [];
+    $byBin = [];
+
+    try {
+        $binChunks = array_chunk($uniqueBinCodes, 25);
+        foreach ($binChunks as $binChunk) {
+            $filter = build_or_filter('Bin_Code', $binChunk);
+            if ($filter === '') {
+                continue;
+            }
+
+            $url = odata_company_url($environment, $company, 'BinContentsList', [
+                '$select' => 'Location_Code,Bin_Code,Item_No',
+                '$filter' => $filter,
+            ]);
+            $rows = odata_get_all($url, $auth, odata_ttl('bin_lookup'));
+
+            foreach ($rows as $row) {
+                $binCode = trim((string) ($row['Bin_Code'] ?? ''));
+                $itemNo = trim((string) ($row['Item_No'] ?? ''));
+                $locationCode = trim((string) ($row['Location_Code'] ?? ''));
+                if ($binCode === '' || $locationCode === '') {
+                    continue;
+                }
+
+                $pairKey = strtoupper($binCode . '|' . $itemNo);
+                if (!isset($byPair[$pairKey])) {
+                    $byPair[$pairKey] = $locationCode;
+                }
+
+                $binKey = strtoupper($binCode);
+                if (!isset($byBin[$binKey])) {
+                    $byBin[$binKey] = $locationCode;
+                }
+            }
+        }
+    } catch (Throwable $throwable) {
+    }
+
+    if (count($byBin) < count($uniqueBinCodes)) {
+        try {
+            $chunks = array_chunk($uniqueBinCodes, 25);
+            foreach ($chunks as $chunk) {
+                $filter = build_or_filter('Code', $chunk);
+                if ($filter === '') {
+                    continue;
+                }
+
+                $url = odata_company_url($environment, $company, 'BinList', [
+                    '$select' => 'Code,Location_Code',
+                    '$filter' => $filter,
+                ]);
+                $rows = odata_get_all($url, $auth, odata_ttl('bin_lookup'));
+
+                foreach ($rows as $row) {
+                    $binCode = trim((string) ($row['Code'] ?? ''));
+                    $locationCode = trim((string) ($row['Location_Code'] ?? ''));
+                    if ($binCode === '' || $locationCode === '') {
+                        continue;
+                    }
+
+                    $binKey = strtoupper($binCode);
+                    if (!isset($byBin[$binKey])) {
+                        $byBin[$binKey] = $locationCode;
+                    }
+                }
+            }
+        } catch (Throwable $throwable) {
+        }
+    }
+
+    return [
+        'by_pair' => $byPair,
+        'by_bin' => $byBin,
+    ];
+}
+
+function apply_bin_locations_to_lines(array $lines, array $binLocationMaps): array
+{
+    $byPair = is_array($binLocationMaps['by_pair'] ?? null) ? $binLocationMaps['by_pair'] : [];
+    $byBin = is_array($binLocationMaps['by_bin'] ?? null) ? $binLocationMaps['by_bin'] : [];
+
+    foreach ($lines as $index => $line) {
+        $binCode = trim((string) ($line['Bin_Code'] ?? ''));
+        if ($binCode === '') {
+            continue;
+        }
+
+        $itemNo = trim((string) ($line['No'] ?? ''));
+        $pairKey = strtoupper($binCode . '|' . $itemNo);
+        $binKey = strtoupper($binCode);
+        $locationCode = '';
+
+        if (isset($byPair[$pairKey])) {
+            $locationCode = trim((string) $byPair[$pairKey]);
+        } elseif (isset($byBin[$binKey])) {
+            $locationCode = trim((string) $byBin[$binKey]);
+        }
+
+        if ($locationCode !== '') {
+            $lines[$index]['KVT_Bin_Location_Code'] = $locationCode;
+        }
+    }
+
+    return $lines;
+}
+
 function fetch_real_article_counts_for_workorders(
     string $environment,
     string $company,
@@ -548,6 +680,14 @@ function material_line_status(array $line): array
 {
     $statusMaterial = material_status_label((string) ($line['KVT_Status_Material'] ?? ''));
     $binCode = trim((string) ($line['Bin_Code'] ?? ''));
+    $binLocationCode = trim((string) ($line['KVT_Bin_Location_Code'] ?? ''));
+    $binDetail = '';
+    if ($binCode !== '') {
+        $binDetail = 'Bin: ' . $binCode;
+        if ($binLocationCode !== '') {
+            $binDetail .= ' · Locatie: ' . $binLocationCode;
+        }
+    }
     $completelyPicked = is_true_value($line['KVT_Completely_Picked'] ?? false);
     $qtyPicked = (float) ($line['KVT_Qty_Picked'] ?? 0);
     $purchaseOrderNo = trim((string) ($line['LVS_Purchase_Order_No'] ?? ''));
@@ -559,7 +699,7 @@ function material_line_status(array $line): array
             'label' => "In bin",
             'class' => 'ok',
             'material_status_label' => $statusMaterial,
-            'detail' => $binCode !== '' ? 'Bin: ' . $binCode : $statusMaterial,
+            'detail' => $binDetail !== '' ? $binDetail : $statusMaterial,
         ];
     }
 
@@ -607,7 +747,7 @@ function material_line_status(array $line): array
         'label' => $statusMaterial,
         'class' => $fallbackClass,
         'material_status_label' => $statusMaterial,
-        'detail' => $binCode !== '' ? 'Bin: ' . $binCode : '-',
+        'detail' => $binDetail !== '' ? $binDetail : '-',
     ];
 }
 
@@ -1228,6 +1368,10 @@ try {
             $splitLines = split_task_article_lines($planningLines, $itemTaskFlagsMap);
             $taskArticleLines = $splitLines['task'];
             $planningLines = $splitLines['article'];
+
+            $binLocationMaps = fetch_bin_location_maps($environment, $company, $planningLines, $auth);
+            $planningLines = apply_bin_locations_to_lines($planningLines, $binLocationMaps);
+
             $selectedWorkOrderRealArticleCount = count($planningLines);
         }
     }
@@ -2233,14 +2377,14 @@ foreach ($statusCatalog as $statusValue) {
                                     class="<?= htmlspecialchars($workOrderBadgeClass) ?>"><?= htmlspecialchars($workOrderStatusText) ?></span>
                             </div>
                             <div class="meta">
-                                Uitvoerdatum: <?= htmlspecialchars(nl_date((string) ($workOrder['Start_Date'] ?? ''))) ?><br />
-                                Object:
+                                <b>Uitvoerdatum</b>: <?= htmlspecialchars(nl_date((string) ($workOrder['Start_Date'] ?? ''))) ?><br />
+                                <b>Object</b>:
                                 <?= bc_text_html((string) ($workOrder['Main_Entity_Description'] ?? '')) ?><br />
-                                Component:
+                                <b>Component</b>:
                                 <?= bc_text_html((string) ($workOrder['Component_Description'] ?? '')) ?><br />
-                                Materiaal nodig: <?= htmlspecialchars(material_needed_text($realArticleCount)) ?><br />
+                                <b>Materiaal nodig</b>: <?= htmlspecialchars(material_needed_text($realArticleCount)) ?><br />
                                 <?php if ($realArticleCount > 0): ?>
-                                    Materiaal:
+                                    <b>Materiaalstatus</b>:
                                     <?= htmlspecialchars(material_status_label((string) ($workOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?>
                                 <?php endif; ?>
                             </div>
