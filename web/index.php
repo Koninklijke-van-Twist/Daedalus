@@ -101,6 +101,11 @@ $dateToRequest = trim((string) ($_GET['date_to'] ?? ''));
 $ajaxAction = trim((string) ($_GET['ajax'] ?? ''));
 $hasStatusFiltersRequest = array_key_exists('status_filters', $_GET);
 
+function get_sharepoint_url($selectedWorkOrder)
+{
+    return "https://sharepoint.microslop.com/{$selectedWorkOrder['Component_Description']}";
+}
+
 function user_pref_path(): string
 {
     return __DIR__ . '/cache/user-company-preferences.json';
@@ -842,9 +847,27 @@ function is_executed_workorder_status(string $status): bool
     return strtolower(trim($status)) === 'uitgevoerd';
 }
 
+function is_closed_workorder_status(string $status): bool
+{
+    return strtolower(trim($status)) === 'afgesloten';
+}
+
+function is_checked_workorder_status(string $status): bool
+{
+    return strtolower(trim($status)) === 'gecontroleerd';
+}
+
+function is_signed_workorder_status(string $status): bool
+{
+    return strtolower(trim($status)) === 'ondertekend';
+}
+
 function status_enabled_default(string $status): bool
 {
-    return !is_executed_workorder_status($status);
+    return !is_executed_workorder_status($status) 
+    && !is_closed_workorder_status($status) 
+    && !is_checked_workorder_status($status)
+    && is_signed_workorder_status($status);
 }
 
 function status_css_class(string $status): string
@@ -2324,12 +2347,12 @@ foreach ($statusCatalog as $statusValue) {
                 <div class="meta">
                     Object:
                     <?= bc_text_html((string) ($selectedWorkOrder['Main_Entity_Description'] ?? '')) ?><br />
-                    Component:
-                    <?= bc_text_html((string) ($selectedWorkOrder['Component_Description'] ?? '')) ?><br />
+                    Component: <a href="<?= get_sharepoint_url($selectedWorkOrder) ?>">
+                    <?= bc_text_html((string) ($selectedWorkOrder['Component_Description'] ?? '')) ?></a><br /><br />
                     Materiaal nodig:
                     <?= htmlspecialchars(material_needed_text($selectedWorkOrderRealArticleCount)) ?><br />
                     <?php if ($selectedWorkOrderRealArticleCount > 0): ?>
-                        Materiaal (header):
+                        Materiaalstatus:
                         <?= htmlspecialchars(material_status_label((string) ($selectedWorkOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?><br />
                     <?php endif; ?><br/>
                     <?php
@@ -2510,6 +2533,12 @@ foreach ($statusCatalog as $statusValue) {
             function hideLoader ()
             {
                 loaderEl.classList.remove('visible');
+            }
+
+            function hideLoaderImmediately ()
+            {
+                resetProgressSequence();
+                hideLoader();
             }
 
             function resetProgressSequence ()
@@ -2712,6 +2741,11 @@ foreach ($statusCatalog as $statusValue) {
             window.addEventListener('beforeunload', function ()
             {
                 showLoader();
+            });
+
+            window.addEventListener('pageshow', function ()
+            {
+                hideLoaderImmediately();
             });
 
             document.addEventListener('visibilitychange', function ()
