@@ -1794,6 +1794,13 @@ foreach ($statusCatalog as $statusValue) {
             margin: 0 0 2px;
         }
 
+        .wo-no-large {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--text);
+            margin: 0 0 2px;
+        }
+
         .wo-task {
             margin: 0;
             font-size: 1rem;
@@ -2466,7 +2473,7 @@ foreach ($statusCatalog as $statusValue) {
         <?php if ($selectedWorkOrder !== null): ?>
             <section class="detail-head">
                 <a href="<?= htmlspecialchars($listHref) ?>" class="back" data-nav-link>← Terug naar werkorders</a>
-                <p class="wo-no">Werkorder <?= bc_text_html((string) ($selectedWorkOrder['No'] ?? '')) ?></p>
+                <p class="wo-no-large"><?= bc_text_html((string) ($selectedWorkOrder['No'] ?? '')) ?></p>
                 <h1 class="title">
                     <?= bc_text_html(workorder_task_text($selectedWorkOrder)) ?>
                 </h1>
@@ -2583,7 +2590,7 @@ foreach ($statusCatalog as $statusValue) {
                         <a class="card" href="<?= htmlspecialchars($workOrderHref) ?>" data-nav-link>
                             <div class="row">
                                 <div>
-                                    <p class="wo-no">Werkorder <?= bc_text_html((string) ($workOrder['No'] ?? '')) ?>
+                                    <p class="wo-no"><?= bc_text_html((string) ($workOrder['No'] ?? '')) ?>
                                     </p>
                                     <h2 class="wo-task">
                                         <?= bc_text_html(workorder_task_text($workOrder)) ?>
