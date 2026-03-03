@@ -1876,6 +1876,13 @@ foreach ($statusCatalog as $statusValue) {
             transform: scale(.997);
         }
 
+        .feedback-card {
+            margin-top: 12px;
+            width: 50%;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
         .row {
             display: flex;
             justify-content: space-between;
@@ -2773,6 +2780,13 @@ foreach ($statusCatalog as $statusValue) {
                     <?php endforeach; ?>
                 </section>
             <?php endif; ?>
+
+            <article class="card feedback-card">
+                <p class="wo-no">Vragen of feedback?</p>
+                <div class="meta">
+                    Mail <a href="mailto:ict@kvt.nl">ict@kvt.nl</a>
+                </div>
+            </article>
         <?php endif; ?>
 
         <?= injectTimerHtml([
@@ -2781,7 +2795,7 @@ foreach ($statusCatalog as $statusValue) {
             'clearUrl' => 'odata.php?action=cache_clear',
             'label' => 'Cache',
             'title' => 'OData cache',
-            'css' => '{{root}} .odata-cache-widget{position:fixed;right:10px;bottom:12px;top:auto;z-index:1200;background:#ffffffed;backdrop-filter:blur(4px);}{{root}} .odata-cache-popout{position:fixed;left:8px;right:8px;top:66px;max-height:calc(100vh - 76px);width:auto;}',
+            'css' => '{{root}} .odata-cache-widget{position:fixed;right:10px;bottom:12px;top:auto;z-index:1200;background:#ffffffed;backdrop-filter:blur(4px);}{{root}} .odata-cache-popout{position:fixed;left:8px;right:8px;top:66px;max-height:calc(100vh - 76px);width:auto;}@media (max-width: 900px){ {{root}} .odata-cache-widget{display:none !important;} }',
         ]) ?>
     </main>
 
