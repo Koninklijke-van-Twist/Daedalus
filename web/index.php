@@ -395,6 +395,29 @@ function material_status_code(string $status): string
     return '';
 }
 
+function workorder_material_badge_class(string $status): string
+{
+    $code = material_status_code($status);
+
+    if (in_array($code, ['V', 'G', 'B'], true)) {
+        return 'ok';
+    }
+
+    if (in_array($code, ['X', 'T', 'I'], true)) {
+        return 'warn';
+    }
+
+    if (in_array($code, ['A', 'C', 'N'], true)) {
+        return 'neutral';
+    }
+
+    if ($code === 'O' || $code === '') {
+        return 'unknown';
+    }
+
+    return 'neutral';
+}
+
 function workorder_task_text(array $workOrder): string
 {
     $taskDescription = trim((string) ($workOrder['Task_Description'] ?? ''));
@@ -630,6 +653,18 @@ function fetch_real_article_counts_for_workorders(
     array $workOrderNos,
     array $auth
 ): array {
+    $summary = fetch_workorder_material_summary_for_workorders($environment, $company, $workOrderNos, $auth);
+    return $summary['counts'];
+}
+
+function fetch_workorder_material_summary_for_workorders(
+    string $environment,
+    string $company,
+    array $workOrderNos,
+    array $auth
+): array {
+    global $statuses;
+
     $normalizedNos = [];
     foreach ($workOrderNos as $workOrderNo) {
         $value = trim((string) $workOrderNo);
@@ -640,12 +675,24 @@ function fetch_real_article_counts_for_workorders(
 
     $uniqueNos = array_keys($normalizedNos);
     $counts = [];
+    $labels = [];
+    $ranks = [];
+    $fallbackLabels = [];
+    $statusRankByCode = [];
+    $statusCodes = array_keys($statuses);
+    foreach ($statusCodes as $index => $code) {
+        $statusRankByCode[strtoupper(trim((string) $code))] = $index;
+    }
+
     foreach ($uniqueNos as $workOrderNo) {
         $counts[$workOrderNo] = 0;
+        $labels[$workOrderNo] = 'Onbekend';
+        $ranks[$workOrderNo] = PHP_INT_MAX;
+        $fallbackLabels[$workOrderNo] = '';
     }
 
     if (empty($uniqueNos)) {
-        return $counts;
+        return ['counts' => $counts, 'labels' => $labels];
     }
 
     $allLines = [];
@@ -658,7 +705,7 @@ function fetch_real_article_counts_for_workorders(
         }
 
         $url = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
-            '$select' => 'LVS_Work_Order_No,Type,No,KVT_Exclude_Calc_Workorder',
+            '$select' => 'LVS_Work_Order_No,Type,No,KVT_Status_Material,KVT_Exclude_Calc_Workorder',
             '$filter' => $filter,
         ]);
 
@@ -694,9 +741,37 @@ function fetch_real_article_counts_for_workorders(
         }
 
         $counts[$workOrderNo]++;
+
+        $statusRaw = trim((string) ($line['KVT_Status_Material'] ?? ''));
+        $statusCode = material_status_code($statusRaw);
+        $statusLabel = material_status_label($statusRaw);
+
+        if ($fallbackLabels[$workOrderNo] === '' && $statusLabel !== '') {
+            $fallbackLabels[$workOrderNo] = $statusLabel;
+        }
+
+        if ($statusCode === '') {
+            continue;
+        }
+
+        $rank = $statusRankByCode[$statusCode] ?? PHP_INT_MAX;
+        if ($rank < $ranks[$workOrderNo]) {
+            $ranks[$workOrderNo] = $rank;
+            $labels[$workOrderNo] = material_status_label($statusCode);
+        }
     }
 
-    return $counts;
+    foreach ($counts as $workOrderNo => $count) {
+        if ($count <= 0) {
+            continue;
+        }
+
+        if (($labels[$workOrderNo] ?? 'Onbekend') === 'Onbekend' && ($fallbackLabels[$workOrderNo] ?? '') !== '') {
+            $labels[$workOrderNo] = $fallbackLabels[$workOrderNo];
+        }
+    }
+
+    return ['counts' => $counts, 'labels' => $labels];
 }
 
 function material_needed_text(int $realArticleCount): string
@@ -1140,7 +1215,7 @@ function fetch_app_workorders_chunked(
             . " and Start_Date le " . $end;
 
         $url = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,End_Date,External_Document_No,KVT_Lowest_Present_Status_Mat,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
+            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,End_Date,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
             '$filter' => $filter,
             '$orderby' => 'Start_Date asc,No asc',
         ]);
@@ -1180,6 +1255,7 @@ $resourcesForUser = [];
 $serviceResources = [];
 $openWorkOrderCounts = [];
 $workOrderRealArticleCounts = [];
+$workOrderMaterialStatusLabels = [];
 $workOrders = [];
 $selectedWorkOrder = null;
 $selectedWorkOrderRealArticleCount = 0;
@@ -1407,12 +1483,18 @@ try {
             static fn(array $workOrder): string => trim((string) ($workOrder['No'] ?? '')),
             $workOrders
         );
-        $workOrderRealArticleCounts = fetch_real_article_counts_for_workorders(
+        $workOrderMaterialSummary = fetch_workorder_material_summary_for_workorders(
             $environment,
             $company,
             $workOrderNosForCounts,
             $auth
         );
+        $workOrderRealArticleCounts = is_array($workOrderMaterialSummary['counts'] ?? null)
+            ? $workOrderMaterialSummary['counts']
+            : [];
+        $workOrderMaterialStatusLabels = is_array($workOrderMaterialSummary['labels'] ?? null)
+            ? $workOrderMaterialSummary['labels']
+            : [];
     }
 
     if ($selectedWorkOrderNo !== '') {
@@ -2442,6 +2524,8 @@ foreach ($statusCatalog as $statusValue) {
                         $workOrderStatusText = safe_text((string) ($workOrder['Status'] ?? ''));
                         $workOrderStatusClass = status_css_class((string) ($workOrder['Status'] ?? ''));
                         $workOrderBadgeClass = $workOrderStatusClass !== '' ? ('badge ' . $workOrderStatusClass) : 'badge neutral';
+                        $workOrderMaterialStatusLabel = safe_text((string) ($workOrderMaterialStatusLabels[$workOrderNo] ?? 'Onbekend'));
+                        $workOrderMaterialBadgeClass = 'badge ' . workorder_material_badge_class($workOrderMaterialStatusLabel);
                         ?>
                         <a class="card" href="<?= htmlspecialchars($workOrderHref) ?>" data-nav-link>
                             <div class="row">
@@ -2464,7 +2548,7 @@ foreach ($statusCatalog as $statusValue) {
                                 <b>Materiaal nodig</b>: <?= htmlspecialchars(material_needed_text($realArticleCount)) ?><br />
                                 <?php if ($realArticleCount > 0): ?>
                                     <b>Materiaalstatus</b>:
-                                    <?= htmlspecialchars(material_status_label((string) ($workOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?>
+                                    <span class="<?= htmlspecialchars($workOrderMaterialBadgeClass) ?>"><?= htmlspecialchars($workOrderMaterialStatusLabel) ?></span>
                                 <?php endif; ?>
                             </div>
                         </a>
