@@ -103,7 +103,7 @@ $hasStatusFiltersRequest = array_key_exists('status_filters', $_GET);
 
 function get_sharepoint_url($selectedWorkOrder)
 {
-    return "https://sharepoint.microslop.com/{$selectedWorkOrder['Component_Description']}";
+    return "https://kvtnl.sharepoint.com/sites/KVTAlgemeen/gedeelde%20documenten/General/Equipments/{$selectedWorkOrder['Component_No']}%20-%20{$selectedWorkOrder['Component_Description']}";
 }
 
 function user_pref_path(): string
@@ -1269,7 +1269,7 @@ $submittedStatusFilters = decode_status_filters_request($statusFiltersRequest);
 $userStatusFilters = ensure_user_status_filters($userEmail, $statusCatalog);
 
 $today = new DateTimeImmutable('today');
-$defaultRangeStart = $today->modify('-7 days');
+$defaultRangeStart = $today;
 $defaultRangeEnd = $today->modify('+28 days');
 $rangeStart = parse_date_ymd($dateFromRequest) ?? $defaultRangeStart;
 $rangeEnd = parse_date_ymd($dateToRequest) ?? $defaultRangeEnd;
@@ -1499,7 +1499,7 @@ try {
 
     if ($selectedWorkOrderNo !== '') {
         $selectedUrl = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,End_Date,External_Document_No,KVT_Lowest_Present_Status_Mat,KVT_Status_Purchase_Order,Job_No,Job_Task_No,KVT_Memo_Service_Location,KVT_Memo_Component,KVT_Memo,KVT_Memo_Internal_Use_Only',
+            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,End_Date,External_Document_No,KVT_Lowest_Present_Status_Mat,KVT_Status_Purchase_Order,Job_No,Job_Task_No,KVT_Memo_Service_Location,KVT_Memo_Component,KVT_Memo,KVT_Memo_Internal_Use_Only',
             '$filter' => "No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
         ]);
         $selectedRows = odata_get_all($selectedUrl, $auth, odata_ttl('workorder_detail'));
@@ -1605,6 +1605,8 @@ foreach ($statusCatalog as $statusValue) {
             --ok: #1d8a4c;
             --warn: #ad6f1a;
             --neutral: #637588;
+            --date-picker-width: 148px;
+            --day-button-width: 35px;
         }
 
         * {
@@ -1861,6 +1863,13 @@ foreach ($statusCatalog as $statusValue) {
             line-height: 1.35;
         }
 
+        .line-subtitle {
+            margin: 2px 0 0;
+            color: var(--muted);
+            font-size: .8rem;
+            line-height: 1.25;
+        }
+
         .line-desc {
             margin-top: 5px;
             color: var(--muted);
@@ -1969,8 +1978,39 @@ foreach ($statusCatalog as $statusValue) {
 
         .range-row {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 1fr 1fr var(--day-button-width);
             gap: 8px;
+        }
+
+        .range-row input[type="date"] {
+            max-width: var(--date-picker-width);
+        }
+
+        .day-picker-field {
+            position: relative;
+        }
+
+        .day-picker-input {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .toolbar .day-picker-button {
+            width: auto;
+            min-width: 0;
+            border: 0;
+            background: transparent;
+            color: inherit;
+            border-radius: 0;
+            padding: 0;
+            font-size: 1.15rem;
+            font-weight: 400;
+            line-height: 1;
+            text-transform: none;
+            cursor: pointer;
         }
 
         .toolbar button {
@@ -2359,6 +2399,11 @@ foreach ($statusCatalog as $statusValue) {
                     <label for="date_to">Tot</label>
                     <input id="date_to" name="date_to" type="date" value="<?= htmlspecialchars($dateToValue) ?>" />
                 </div>
+                <div class="field day-picker-field">
+                    <label for="date_day">Dag</label>
+                    <input id="date_day" class="day-picker-input" type="date" />
+                    <button id="pick-day" class="day-picker-button" type="button">📅</button>
+                </div>
             </div>
             <div class="field">
                 <label for="q">Zoeken op werkorder of omschrijving</label>
@@ -2484,11 +2529,15 @@ foreach ($statusCatalog as $statusValue) {
                     <?php foreach ($planningLines as $line): ?>
                         <?php $lineStatus = material_line_status($line); ?>
                         <?php $extendedText = trim((string) ($line['KVT_Extended_Text'] ?? '')); ?>
+                        <?php $lineNo = trim((string) ($line['No'] ?? '')); ?>
                         <article class="card">
                             <div class="row">
-                                <p class="line-name"><?= bc_text_html((string) ($line['Description'] ?? '')) ?></p>
+                                <div>
+                                    <p class="line-name"><?= bc_text_html((string) ($line['Description'] ?? '')) ?></p>
+                                    <p class="line-subtitle"><?= bc_text_html($lineNo !== '' ? $lineNo : '-') ?></p>
+                                </div>
                                 <span
-                                    class="badge <?= htmlspecialchars($lineStatus['class']) ?>"><?= htmlspecialchars($lineStatus['label']) ?></span>
+                                    class="badge <?= htmlspecialchars($lineStatus['class']) ?>"><?= htmlspecialchars(safe_text((string) ($lineStatus['material_status_label'] ?? 'Onbekend'))) ?></span>
                             </div>
                             <div class="meta">
                                 Aantal: <?= htmlspecialchars((string) ($line['Quantity'] ?? '0')) ?>
@@ -2857,12 +2906,54 @@ foreach ($statusCatalog as $statusValue) {
             }
 
             const personSelectEl = document.getElementById('person');
+            const dateFromEl = document.getElementById('date_from');
+            const dateToEl = document.getElementById('date_to');
+            const pickDayButtonEl = document.getElementById('pick-day');
+            const dayPickerInputEl = document.getElementById('date_day');
             const statusModalEl = document.getElementById('status-filter-modal');
             const openStatusFilterEl = document.getElementById('open-status-filter');
             const saveStatusFilterEl = document.getElementById('save-status-filter');
             const statusFiltersInputEl = document.getElementById('status_filters');
             const statusFilterCheckboxEls = Array.from(document.querySelectorAll('.status-filter-checkbox'));
             const statusCloseEls = Array.from(document.querySelectorAll('[data-status-close]'));
+
+            if (pickDayButtonEl && dayPickerInputEl && dateFromEl && dateToEl)
+            {
+                pickDayButtonEl.addEventListener('click', function ()
+                {
+                    const currentValue = (dateFromEl.value || dateToEl.value || '').trim();
+                    if (currentValue !== '')
+                    {
+                        dayPickerInputEl.value = currentValue;
+                    }
+
+                    if (typeof dayPickerInputEl.showPicker === 'function')
+                    {
+                        dayPickerInputEl.showPicker();
+                        return;
+                    }
+
+                    dayPickerInputEl.click();
+                });
+
+                dayPickerInputEl.addEventListener('change', function ()
+                {
+                    const pickedDate = (dayPickerInputEl.value || '').trim();
+                    if (pickedDate === '')
+                    {
+                        return;
+                    }
+
+                    dateFromEl.value = pickedDate;
+                    dateToEl.value = pickedDate;
+
+                    if (pickDayButtonEl.form)
+                    {
+                        showLoader();
+                        pickDayButtonEl.form.requestSubmit();
+                    }
+                });
+            }
 
             function closeStatusModal ()
             {
