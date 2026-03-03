@@ -1005,7 +1005,7 @@ function status_enabled_default(string $status): bool
     return !is_executed_workorder_status($status)
         && !is_closed_workorder_status($status)
         && !is_checked_workorder_status($status)
-        && is_signed_workorder_status($status);
+        && !is_signed_workorder_status($status);
 }
 
 function status_css_class(string $status): string
