@@ -939,10 +939,10 @@ function is_signed_workorder_status(string $status): bool
 
 function status_enabled_default(string $status): bool
 {
-    return !is_executed_workorder_status($status) 
-    && !is_closed_workorder_status($status) 
-    && !is_checked_workorder_status($status)
-    && is_signed_workorder_status($status);
+    return !is_executed_workorder_status($status)
+        && !is_closed_workorder_status($status)
+        && !is_checked_workorder_status($status)
+        && is_signed_workorder_status($status);
 }
 
 function status_css_class(string $status): string
@@ -1584,6 +1584,9 @@ foreach ($statusCatalog as $statusValue) {
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title><?= htmlspecialchars($title) ?></title>
     <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
@@ -2430,13 +2433,13 @@ foreach ($statusCatalog as $statusValue) {
                     Object:
                     <?= bc_text_html((string) ($selectedWorkOrder['Main_Entity_Description'] ?? '')) ?><br />
                     Component: <a href="<?= get_sharepoint_url($selectedWorkOrder) ?>">
-                    <?= bc_text_html((string) ($selectedWorkOrder['Component_Description'] ?? '')) ?></a><br /><br />
+                        <?= bc_text_html((string) ($selectedWorkOrder['Component_Description'] ?? '')) ?></a><br /><br />
                     Materiaal nodig:
                     <?= htmlspecialchars(material_needed_text($selectedWorkOrderRealArticleCount)) ?><br />
                     <?php if ($selectedWorkOrderRealArticleCount > 0): ?>
                         Materiaalstatus:
                         <?= htmlspecialchars(material_status_label((string) ($selectedWorkOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?><br />
-                    <?php endif; ?><br/>
+                    <?php endif; ?><br />
                     <?php
                     $omschrijvingParts = [];
                     $memoText = trim((string) ($selectedWorkOrder['KVT_Memo'] ?? ''));
@@ -2449,7 +2452,7 @@ foreach ($statusCatalog as $statusValue) {
                     }
                     ?>
                     <?php if (!empty($omschrijvingParts)): ?>
-                        <b>Omschrijving:</b><br/>
+                        <b>Omschrijving:</b><br />
                         <?= implode('<br/><br/>', $omschrijvingParts) ?>
                     <?php endif; ?>
                 </div>
@@ -2497,7 +2500,8 @@ foreach ($statusCatalog as $statusValue) {
                                 </div>
                             <?php endif; ?>
                             <div class="status-material-label">
-                                Materiaalstatus: <?= htmlspecialchars(safe_text((string) ($lineStatus['material_status_label'] ?? 'Onbekend'))) ?>
+                                Materiaalstatus:
+                                <?= htmlspecialchars(safe_text((string) ($lineStatus['material_status_label'] ?? 'Onbekend'))) ?>
                             </div>
                             <div class="status-detail"><?= htmlspecialchars($lineStatus['detail']) ?></div>
                         </article>
@@ -2540,7 +2544,8 @@ foreach ($statusCatalog as $statusValue) {
                                     class="<?= htmlspecialchars($workOrderBadgeClass) ?>"><?= htmlspecialchars($workOrderStatusText) ?></span>
                             </div>
                             <div class="meta">
-                                <b>Uitvoerdatum</b>: <?= htmlspecialchars(nl_date((string) ($workOrder['Start_Date'] ?? ''))) ?><br />
+                                <b>Uitvoerdatum</b>:
+                                <?= htmlspecialchars(nl_date((string) ($workOrder['Start_Date'] ?? ''))) ?><br />
                                 <b>Object</b>:
                                 <?= bc_text_html((string) ($workOrder['Main_Entity_Description'] ?? '')) ?><br />
                                 <b>Component</b>:
@@ -2548,7 +2553,8 @@ foreach ($statusCatalog as $statusValue) {
                                 <b>Materiaal nodig</b>: <?= htmlspecialchars(material_needed_text($realArticleCount)) ?><br />
                                 <?php if ($realArticleCount > 0): ?>
                                     <b>Materiaalstatus</b>:
-                                    <span class="<?= htmlspecialchars($workOrderMaterialBadgeClass) ?>"><?= htmlspecialchars($workOrderMaterialStatusLabel) ?></span>
+                                    <span
+                                        class="<?= htmlspecialchars($workOrderMaterialBadgeClass) ?>"><?= htmlspecialchars($workOrderMaterialStatusLabel) ?></span>
                                 <?php endif; ?>
                             </div>
                         </a>
@@ -3016,6 +3022,17 @@ foreach ($statusCatalog as $statusValue) {
                 }
             }
         })();
+    </script>
+    <script>
+        if ('serviceWorker' in navigator)
+        {
+            window.addEventListener('load', function ()
+            {
+                navigator.serviceWorker.register('sw.js').catch(function ()
+                {
+                });
+            });
+        }
     </script>
 </body>
 
