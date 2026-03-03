@@ -233,6 +233,78 @@ function parse_date_ymd(string $value): ?DateTimeImmutable
     return $parsed;
 }
 
+function country_calling_code(string $countryCode): string
+{
+    $code = strtoupper(trim($countryCode));
+    if ($code === '') {
+        return '';
+    }
+
+    $map = [
+        'NL' => '+31',
+        'BE' => '+32',
+        'DE' => '+49',
+        'FR' => '+33',
+        'GB' => '+44',
+        'UK' => '+44',
+        'IE' => '+353',
+        'ES' => '+34',
+        'IT' => '+39',
+        'PT' => '+351',
+        'PL' => '+48',
+        'DK' => '+45',
+        'SE' => '+46',
+        'NO' => '+47',
+        'FI' => '+358',
+        'US' => '+1',
+        'CA' => '+1',
+    ];
+
+    return (string) ($map[$code] ?? '');
+}
+
+function phone_tel_href(string $phone, string $countryCode = ''): string
+{
+    $value = trim($phone);
+    if ($value === '') {
+        return '';
+    }
+
+    $normalized = preg_replace('/[^0-9+]/', '', $value);
+    $normalized = is_string($normalized) ? trim($normalized) : '';
+    if ($normalized === '') {
+        return '';
+    }
+
+    if (strpos($normalized, '00') === 0) {
+        $normalized = '+' . substr($normalized, 2);
+    }
+
+    if (strpos($normalized, '+') !== 0) {
+        $callingCode = country_calling_code($countryCode);
+        if ($callingCode !== '') {
+            $nationalNumber = preg_replace('/^0+/', '', $normalized);
+            $nationalNumber = is_string($nationalNumber) ? $nationalNumber : $normalized;
+            $normalized = $callingCode . $nationalNumber;
+        }
+    }
+
+    $normalized = preg_replace('/(?!^)\+/', '', $normalized);
+    return is_string($normalized) ? trim($normalized) : '';
+}
+
+function country_code_flag_emoji(string $countryCode): string
+{
+    $code = strtoupper(trim($countryCode));
+    if (strlen($code) !== 2 || preg_match('/^[A-Z]{2}$/', $code) !== 1) {
+        return '';
+    }
+
+    $first = 127397 + ord($code[0]);
+    $second = 127397 + ord($code[1]);
+    return html_entity_decode('&#' . $first . ';&#' . $second . ';', ENT_QUOTES, 'UTF-8');
+}
+
 function fetch_app_resources_by_email(string $environment, string $company, string $email, array $auth): array
 {
     if ($email === '') {
@@ -1152,6 +1224,23 @@ function fetch_werkorder_no_material_needed_by_no(string $environment, string $c
     return is_true_value($rows[0]['KVT_No_Material_Needed'] ?? false);
 }
 
+function fetch_werkorder_visit_contact_by_no(string $environment, string $company, string $workOrderNo, array $auth): array
+{
+    $workOrderNo = trim($workOrderNo);
+    if ($workOrderNo === '') {
+        return [];
+    }
+
+    $url = odata_company_url($environment, $company, 'Werkorders', [
+        '$select' => 'No,KVT_Primary_Contact_Phone_No,Visit_Address,Visit_Address_2,Visit_Post_Code,Visit_City,Visit_Country_Region_Code',
+        '$filter' => "No eq '" . odata_quote_string($workOrderNo) . "'",
+    ]);
+
+    $rows = odata_get_all($url, $auth, odata_ttl('workorder_detail'));
+    $firstRow = $rows[0] ?? null;
+    return is_array($firstRow) ? $firstRow : [];
+}
+
 function build_week_chunks(DateTimeImmutable $startDate, DateTimeImmutable $endDate): array
 {
     if ($endDate < $startDate) {
@@ -1497,6 +1586,11 @@ try {
         $selectedWorkOrder = $selectedRows[0] ?? null;
 
         if ($selectedWorkOrder !== null) {
+            $visitContactRow = fetch_werkorder_visit_contact_by_no($environment, $company, $selectedWorkOrderNo, $auth);
+            if (!empty($visitContactRow)) {
+                $selectedWorkOrder = array_merge($selectedWorkOrder, $visitContactRow);
+            }
+
             $linesUrl = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
                 '$select' => 'Line_No,Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Completely_Picked,KVT_Qty_Picked,KVT_Expected_Receipt_Date,LVS_Purchase_Order_No,LVS_Outstanding_Qty_Base,Planning_Date,LVS_Vendor_Name,LVS_Supply_from,KVT_Exclude_Calc_Workorder',
                 '$filter' => "LVS_Work_Order_No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
@@ -2483,6 +2577,66 @@ foreach ($statusCatalog as $statusValue) {
                         Materiaalstatus:
                         <?= htmlspecialchars(material_status_label((string) ($selectedWorkOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?><br />
                     <?php endif; ?><br />
+                    <?php
+                    $primaryContactPhone = trim((string) ($selectedWorkOrder['KVT_Primary_Contact_Phone_No'] ?? ''));
+
+                    $visitAddress = trim((string) ($selectedWorkOrder['Visit_Address'] ?? ''));
+                    $visitAddress2 = trim((string) ($selectedWorkOrder['Visit_Address_2'] ?? ''));
+                    $visitPostCode = trim((string) ($selectedWorkOrder['Visit_Post_Code'] ?? ''));
+                    $visitCity = trim((string) ($selectedWorkOrder['Visit_City'] ?? ''));
+                    $visitCountryCode = trim((string) ($selectedWorkOrder['Visit_Country_Region_Code'] ?? ''));
+                    $primaryContactPhoneHref = phone_tel_href($primaryContactPhone, $visitCountryCode);
+
+                    $visitAddressParts = [];
+                    if ($visitAddress !== '') {
+                        $visitAddressParts[] = $visitAddress;
+                    }
+                    if ($visitAddress2 !== '') {
+                        $visitAddressParts[] = $visitAddress2;
+                    }
+
+                    $visitPostAndCity = '';
+                    if ($visitPostCode !== '' && $visitCity !== '') {
+                        $visitPostAndCity = $visitPostCode . ', ' . $visitCity;
+                    } elseif ($visitPostCode !== '') {
+                        $visitPostAndCity = $visitPostCode;
+                    } elseif ($visitCity !== '') {
+                        $visitPostAndCity = $visitCity;
+                    }
+
+                    if ($visitPostAndCity !== '') {
+                        $visitAddressParts[] = $visitPostAndCity;
+                    }
+
+                    $visitCountryText = '';
+                    if ($visitCountryCode !== '') {
+                        $countryPrefix = country_code_flag_emoji($visitCountryCode);
+                        $visitCountryText = trim($countryPrefix);
+                    }
+
+                    $visitAddressText = implode(', ', $visitAddressParts);
+                    if ($visitCountryText !== '') {
+                        $visitAddressText = trim($visitAddressText . ' ' . $visitCountryText);
+                    }
+                    $hasVisitInfo = $visitAddressText !== '';
+                    ?>
+                    <?php if ($primaryContactPhone !== '' || $hasVisitInfo): ?>
+                        <?php if ($primaryContactPhone !== ''): ?>
+                            <b>Telefoon</b>:
+                            <?php if ($primaryContactPhoneHref !== ''): ?>
+                                <a
+                                    href="tel:<?= htmlspecialchars($primaryContactPhoneHref) ?>"><?= htmlspecialchars($primaryContactPhone) ?></a><br />
+                            <?php else: ?>
+                                <?= htmlspecialchars($primaryContactPhone) ?><br />
+                            <?php endif; ?>
+                        <?php endif; ?>
+
+                        <?php if ($hasVisitInfo): ?>
+                            <b>Bezoekadres</b>:<br />
+                            <?= bc_text_html($visitAddressText) ?><br />
+                        <?php endif; ?>
+                        <br />
+                    <?php endif; ?>
                     <?php
                     $omschrijvingParts = [];
                     $memoText = trim((string) ($selectedWorkOrder['KVT_Memo'] ?? ''));
