@@ -861,15 +861,6 @@ function material_line_status(array $line): array
             $detailParts[] = $statusMaterial;
         }
 
-        if ($hasKnownExpectedDate) {
-            return [
-                'label' => 'In bestelling',
-                'class' => 'warn',
-                'material_status_label' => $statusMaterial,
-                'detail' => implode(' · ', $detailParts),
-            ];
-        }
-
         return [
             'label' => 'Onbekend',
             'class' => 'unknown',
