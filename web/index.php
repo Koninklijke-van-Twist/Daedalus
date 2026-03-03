@@ -1232,13 +1232,35 @@ function fetch_werkorder_visit_contact_by_no(string $environment, string $compan
     }
 
     $url = odata_company_url($environment, $company, 'Werkorders', [
-        '$select' => 'No,KVT_Primary_Contact_Phone_No,Visit_Address,Visit_Address_2,Visit_Post_Code,Visit_City,Visit_Country_Region_Code',
+        '$select' => 'No,KVT_Primary_Contact_No,KVT_Primary_Contact_Phone_No,Visit_Address,Visit_Address_2,Visit_Post_Code,Visit_City,Visit_Country_Region_Code',
         '$filter' => "No eq '" . odata_quote_string($workOrderNo) . "'",
     ]);
 
     $rows = odata_get_all($url, $auth, odata_ttl('workorder_detail'));
     $firstRow = $rows[0] ?? null;
     return is_array($firstRow) ? $firstRow : [];
+}
+
+function fetch_contact_name_by_no(string $environment, string $company, string $contactNo, array $auth): string
+{
+    $contactNo = trim($contactNo);
+    if ($contactNo === '') {
+        return '';
+    }
+
+    $url = odata_company_url($environment, $company, 'Contacts', [
+        '$select' => 'No,Name,Name_2',
+        '$filter' => "No eq '" . odata_quote_string($contactNo) . "'",
+    ]);
+
+    $rows = odata_get_all($url, $auth, odata_ttl('workorder_detail'));
+    if (empty($rows) || !is_array($rows[0])) {
+        return '';
+    }
+
+    $name = trim((string) ($rows[0]['Name'] ?? ''));
+    $name2 = trim((string) ($rows[0]['Name_2'] ?? ''));
+    return trim($name . ($name2 !== '' ? (' ' . $name2) : ''));
 }
 
 function build_week_chunks(DateTimeImmutable $startDate, DateTimeImmutable $endDate): array
@@ -1340,6 +1362,7 @@ $workOrders = [];
 $selectedWorkOrder = null;
 $selectedWorkOrderRealArticleCount = 0;
 $selectedWorkOrderMaterialStatusLabel = 'Onbekend';
+$selectedWorkOrderPrimaryContactName = '';
 $taskArticleLines = [];
 $planningLines = [];
 $availableWorkorderStatuses = [];
@@ -1600,6 +1623,16 @@ try {
             $visitContactRow = fetch_werkorder_visit_contact_by_no($environment, $company, $selectedWorkOrderNo, $auth);
             if (!empty($visitContactRow)) {
                 $selectedWorkOrder = array_merge($selectedWorkOrder, $visitContactRow);
+            }
+
+            $primaryContactNo = trim((string) ($selectedWorkOrder['KVT_Primary_Contact_No'] ?? ''));
+            if ($primaryContactNo !== '') {
+                $selectedWorkOrderPrimaryContactName = fetch_contact_name_by_no(
+                    $environment,
+                    $company,
+                    $primaryContactNo,
+                    $auth
+                );
             }
 
             $linesUrl = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
@@ -2596,6 +2629,7 @@ foreach ($statusCatalog as $statusValue) {
                         <?= htmlspecialchars($selectedWorkOrderMaterialStatusLabel) ?><br />
                     <?php endif; ?><br />
                     <?php
+                    $primaryContactName = trim((string) $selectedWorkOrderPrimaryContactName);
                     $primaryContactPhone = trim((string) ($selectedWorkOrder['KVT_Primary_Contact_Phone_No'] ?? ''));
 
                     $visitAddress = trim((string) ($selectedWorkOrder['Visit_Address'] ?? ''));
@@ -2639,6 +2673,9 @@ foreach ($statusCatalog as $statusValue) {
                     $hasVisitInfo = $visitAddressText !== '';
                     ?>
                     <?php if ($primaryContactPhone !== '' || $hasVisitInfo): ?>
+                        <?php if ($primaryContactName !== ''): ?>
+                            <b>Contactpersoon</b>: <?= bc_text_html($primaryContactName) ?><br />
+                        <?php endif; ?>
                         <?php if ($primaryContactPhone !== ''): ?>
                             <b>Telefoon</b>:
                             <?php if ($primaryContactPhoneHref !== ''): ?>
