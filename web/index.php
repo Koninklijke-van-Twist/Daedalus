@@ -1339,6 +1339,7 @@ $workOrderMaterialStatusLabels = [];
 $workOrders = [];
 $selectedWorkOrder = null;
 $selectedWorkOrderRealArticleCount = 0;
+$selectedWorkOrderMaterialStatusLabel = 'Onbekend';
 $taskArticleLines = [];
 $planningLines = [];
 $availableWorkorderStatuses = [];
@@ -1586,6 +1587,16 @@ try {
         $selectedWorkOrder = $selectedRows[0] ?? null;
 
         if ($selectedWorkOrder !== null) {
+            $selectedWorkOrderMaterialSummary = fetch_workorder_material_summary_for_workorders(
+                $environment,
+                $company,
+                [$selectedWorkOrderNo],
+                $auth
+            );
+            $selectedWorkOrderMaterialStatusLabel = safe_text((string) (
+                $selectedWorkOrderMaterialSummary['labels'][$selectedWorkOrderNo] ?? 'Onbekend'
+            ));
+
             $visitContactRow = fetch_werkorder_visit_contact_by_no($environment, $company, $selectedWorkOrderNo, $auth);
             if (!empty($visitContactRow)) {
                 $selectedWorkOrder = array_merge($selectedWorkOrder, $visitContactRow);
@@ -2575,7 +2586,7 @@ foreach ($statusCatalog as $statusValue) {
                     <?= htmlspecialchars(material_needed_text($selectedWorkOrderRealArticleCount)) ?><br />
                     <?php if ($selectedWorkOrderRealArticleCount > 0): ?>
                         Materiaalstatus:
-                        <?= htmlspecialchars(material_status_label((string) ($selectedWorkOrder['KVT_Lowest_Present_Status_Mat'] ?? ''))) ?><br />
+                        <?= htmlspecialchars($selectedWorkOrderMaterialStatusLabel) ?><br />
                     <?php endif; ?><br />
                     <?php
                     $primaryContactPhone = trim((string) ($selectedWorkOrder['KVT_Primary_Contact_Phone_No'] ?? ''));
