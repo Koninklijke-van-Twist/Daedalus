@@ -265,7 +265,7 @@ function read_user_status_filters_payload(string $path): array
     $filtersRaw = is_array($raw['filters'] ?? null) ? $raw['filters'] : $raw;
     $filters = normalize_status_filter_map($filtersRaw);
     $webfleetFiltersRaw = is_array($raw['webfleet_filters'] ?? null) ? $raw['webfleet_filters'] : [];
-    $webfleetFilters = normalize_status_filter_map($webfleetFiltersRaw);
+    $webfleetFilters = normalize_webfleet_filter_map($webfleetFiltersRaw);
     $meta = is_array($raw['meta'] ?? null) ? $raw['meta'] : [];
 
     return [
@@ -1252,6 +1252,11 @@ function status_css_class(string $status): string
 
 function webfleet_default_status_label(): string
 {
+    return 'Niet gestart';
+}
+
+function webfleet_legacy_default_status_label(): string
+{
     return 'Nog niet gestart';
 }
 
@@ -1289,6 +1294,24 @@ function webfleet_status_badge_class(string $status): string
     }
 
     return 'status-gepland';
+}
+
+function normalize_webfleet_filter_map(array $input): array
+{
+    $normalized = normalize_status_filter_map($input);
+    $legacyKey = webfleet_legacy_default_status_label();
+    $defaultKey = webfleet_default_status_label();
+
+    if (array_key_exists($legacyKey, $normalized)) {
+        $legacyValue = (bool) $normalized[$legacyKey];
+        unset($normalized[$legacyKey]);
+
+        if (!array_key_exists($defaultKey, $normalized)) {
+            $normalized[$defaultKey] = $legacyValue;
+        }
+    }
+
+    return $normalized;
 }
 
 function format_workorder_time_value(string $value): string
@@ -1392,7 +1415,8 @@ function ensure_user_webfleet_status_filters(string $email, array $catalogStatus
 {
     $path = user_status_filters_path($email);
     $payload = read_user_status_filters_payload($path);
-    $existing = is_array($payload['webfleet_filters'] ?? null) ? $payload['webfleet_filters'] : [];
+    $existingRaw = is_array($payload['webfleet_filters'] ?? null) ? $payload['webfleet_filters'] : [];
+    $existing = normalize_webfleet_filter_map($existingRaw);
     $existingMeta = is_array($payload['meta'] ?? null) ? $payload['meta'] : [];
     $changed = false;
 
@@ -1796,7 +1820,7 @@ $allWorkOrdersCount = 0;
 $statusCatalog = read_status_catalog();
 $webfleetStatusCatalog = webfleet_status_catalog();
 $submittedStatusFilters = decode_status_filters_request($statusFiltersRequest);
-$submittedWebfleetStatusFilters = decode_status_filters_request($webfleetStatusFiltersRequest);
+$submittedWebfleetStatusFilters = normalize_webfleet_filter_map(decode_status_filters_request($webfleetStatusFiltersRequest));
 $statusFilterMetadata = current_status_filter_metadata($statusFilterOwnerEmail);
 $userStatusFilters = ensure_user_status_filters($statusFilterOwnerEmail, $statusCatalog, $statusFilterMetadata);
 $webfleetStatusFilters = ensure_user_webfleet_status_filters($statusFilterOwnerEmail, $webfleetStatusCatalog, $statusFilterMetadata);
