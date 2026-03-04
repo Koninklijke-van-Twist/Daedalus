@@ -93,10 +93,12 @@ $odataTtl = [
     'bin_lookup' => $minute * 15,
 ];
 
-$userEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+$sessionUserEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+$userEmail = $sessionUserEmail;
 if ($userEmail === '') {
     $userEmail = 'ict@kvt.nl';
 }
+$statusFilterOwnerEmail = $sessionUserEmail;
 $selectedWorkOrderNo = trim((string) ($_GET['workorder'] ?? ''));
 $selectedPersonNoRequest = trim((string) ($_GET['person'] ?? ''));
 $searchQuery = trim((string) ($_GET['q'] ?? ''));
@@ -123,8 +125,151 @@ function status_catalog_path(): string
 
 function user_status_filters_path(string $email): string
 {
-    $safeEmail = str_replace(["\\", '/', "\0"], '_', strtolower(trim($email)));
+    $normalizedEmail = strtolower(trim($email));
+    if ($normalizedEmail === '') {
+        return __DIR__ . '/cache/users/onbekend.json';
+    }
+
+    $safeEmail = str_replace(["\\", '/', "\0"], '_', $normalizedEmail);
     return __DIR__ . '/cache/users/' . $safeEmail . '.json';
+}
+
+function request_client_ip(): string
+{
+    $candidates = [
+        (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''),
+        (string) ($_SERVER['HTTP_X_REAL_IP'] ?? ''),
+        (string) ($_SERVER['REMOTE_ADDR'] ?? ''),
+    ];
+
+    foreach ($candidates as $candidate) {
+        $value = trim($candidate);
+        if ($value === '') {
+            continue;
+        }
+
+        if (strpos($value, ',') !== false) {
+            $parts = array_map('trim', explode(',', $value));
+            $value = trim((string) ($parts[0] ?? ''));
+        }
+
+        if ($value !== '') {
+            return $value;
+        }
+    }
+
+    return 'onbekend';
+}
+
+function request_location_hint(): string
+{
+    $city = trim((string) ($_SERVER['HTTP_X_CITY'] ?? $_SERVER['HTTP_CF_IPCITY'] ?? $_SERVER['HTTP_X_APPENGINE_CITY'] ?? ''));
+    $region = trim((string) ($_SERVER['HTTP_X_REGION'] ?? $_SERVER['HTTP_CF_REGION'] ?? $_SERVER['HTTP_X_APPENGINE_REGION'] ?? ''));
+    $country = trim((string) ($_SERVER['HTTP_X_COUNTRY_CODE'] ?? $_SERVER['HTTP_CF_IPCOUNTRY'] ?? $_SERVER['HTTP_X_APPENGINE_COUNTRY'] ?? ''));
+
+    $parts = [];
+    if ($city !== '') {
+        $parts[] = $city;
+    }
+    if ($region !== '') {
+        $parts[] = $region;
+    }
+    if ($country !== '') {
+        $parts[] = strtoupper($country);
+    }
+
+    if (!empty($parts)) {
+        return implode(', ', $parts);
+    }
+
+    return 'onbekend';
+}
+
+function parse_user_agent_device(string $userAgent): array
+{
+    $ua = trim($userAgent);
+    if ($ua === '') {
+        return ['brand' => 'onbekend', 'model' => 'onbekend', 'name' => 'onbekend'];
+    }
+
+    $lower = strtolower($ua);
+    if (strpos($lower, 'iphone') !== false) {
+        return ['brand' => 'Apple', 'model' => 'iPhone', 'name' => 'Apple iPhone'];
+    }
+    if (strpos($lower, 'ipad') !== false) {
+        return ['brand' => 'Apple', 'model' => 'iPad', 'name' => 'Apple iPad'];
+    }
+    if (strpos($lower, 'macintosh') !== false || strpos($lower, 'mac os') !== false) {
+        return ['brand' => 'Apple', 'model' => 'Mac', 'name' => 'Apple Mac'];
+    }
+    if (strpos($lower, 'windows') !== false) {
+        return ['brand' => 'Microsoft', 'model' => 'Windows PC', 'name' => 'Windows PC'];
+    }
+
+    if (strpos($lower, 'android') !== false) {
+        $model = 'Android';
+        if (preg_match('/Android[^;]*;\s*([^;\)]+)/i', $ua, $matches) === 1) {
+            $candidate = trim((string) ($matches[1] ?? ''));
+            if ($candidate !== '' && stripos($candidate, 'Build/') === false) {
+                $model = $candidate;
+            }
+        }
+
+        $brand = 'Android';
+        $brandMap = ['samsung', 'huawei', 'xiaomi', 'oneplus', 'oppo', 'vivo', 'sony', 'nokia', 'motorola', 'google'];
+        foreach ($brandMap as $brandCandidate) {
+            if (strpos($lower, $brandCandidate) !== false) {
+                $brand = ucfirst($brandCandidate);
+                break;
+            }
+        }
+
+        return [
+            'brand' => $brand,
+            'model' => $model,
+            'name' => trim($brand . ' ' . $model),
+        ];
+    }
+
+    return ['brand' => 'onbekend', 'model' => 'onbekend', 'name' => 'onbekend'];
+}
+
+function current_status_filter_metadata(string $email): array
+{
+    $userAgent = trim((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''));
+    $device = parse_user_agent_device($userAgent);
+
+    return [
+        'email' => strtolower(trim($email)) !== '' ? strtolower(trim($email)) : 'onbekend',
+        'ip_address' => request_client_ip(),
+        'location' => request_location_hint(),
+        'user_agent' => $userAgent !== '' ? $userAgent : 'onbekend',
+        'device_brand' => (string) ($device['brand'] ?? 'onbekend'),
+        'device_model' => (string) ($device['model'] ?? 'onbekend'),
+        'device_name' => (string) ($device['name'] ?? 'onbekend'),
+        'updated_at' => gmdate('c'),
+    ];
+}
+
+function read_user_status_filters_payload(string $path): array
+{
+    $raw = read_json_assoc_file($path);
+    $filtersRaw = is_array($raw['filters'] ?? null) ? $raw['filters'] : $raw;
+    $filters = normalize_status_filter_map($filtersRaw);
+    $meta = is_array($raw['meta'] ?? null) ? $raw['meta'] : [];
+
+    return [
+        'filters' => $filters,
+        'meta' => $meta,
+    ];
+}
+
+function write_user_status_filters_payload(string $path, array $filters, array $meta): void
+{
+    write_json_assoc_file($path, [
+        'filters' => normalize_status_filter_map($filters),
+        'meta' => $meta,
+    ]);
 }
 
 function read_json_assoc_file(string $path): array
@@ -1049,18 +1194,12 @@ function write_status_catalog(array $statuses): void
     write_json_assoc_file(status_catalog_path(), array_values($result));
 }
 
-function ensure_user_status_filters(string $email, array $catalogStatuses): array
+function ensure_user_status_filters(string $email, array $catalogStatuses, array $metadata = []): array
 {
-    if ($email === '') {
-        $defaults = [];
-        foreach ($catalogStatuses as $status) {
-            $defaults[$status] = status_enabled_default($status);
-        }
-        return $defaults;
-    }
-
     $path = user_status_filters_path($email);
-    $existing = normalize_status_filter_map(read_json_assoc_file($path));
+    $payload = read_user_status_filters_payload($path);
+    $existing = is_array($payload['filters'] ?? null) ? $payload['filters'] : [];
+    $existingMeta = is_array($payload['meta'] ?? null) ? $payload['meta'] : [];
     $changed = false;
 
     foreach ($catalogStatuses as $status) {
@@ -1070,8 +1209,8 @@ function ensure_user_status_filters(string $email, array $catalogStatuses): arra
         }
     }
 
-    if ($changed || !is_file($path)) {
-        write_json_assoc_file($path, $existing);
+    if ($changed || !is_file($path) || $existingMeta !== $metadata) {
+        write_user_status_filters_payload($path, $existing, $metadata);
     }
 
     return $existing;
@@ -1342,7 +1481,16 @@ $workOrderStatusCounts = [];
 $allWorkOrdersCount = 0;
 $statusCatalog = read_status_catalog();
 $submittedStatusFilters = decode_status_filters_request($statusFiltersRequest);
-$userStatusFilters = ensure_user_status_filters($userEmail, $statusCatalog);
+$statusFilterMetadata = current_status_filter_metadata($statusFilterOwnerEmail);
+$userStatusFilters = ensure_user_status_filters($statusFilterOwnerEmail, $statusCatalog, $statusFilterMetadata);
+
+if ($selectedWorkOrderNo === '' && $ajaxAction === '') {
+    write_user_status_filters_payload(
+        user_status_filters_path($statusFilterOwnerEmail),
+        $userStatusFilters,
+        $statusFilterMetadata
+    );
+}
 
 $today = new DateTimeImmutable('today');
 $defaultRangeStart = $today;
@@ -1516,7 +1664,7 @@ try {
             write_status_catalog($statusCatalog);
         }
 
-        $userStatusFilters = ensure_user_status_filters($userEmail, $statusCatalog);
+        $userStatusFilters = ensure_user_status_filters($statusFilterOwnerEmail, $statusCatalog, $statusFilterMetadata);
 
         if ($hasStatusFiltersRequest && $statusFiltersRequest !== '') {
             foreach ($statusCatalog as $statusValue) {
@@ -1525,7 +1673,11 @@ try {
                 }
             }
 
-            write_json_assoc_file(user_status_filters_path($userEmail), $userStatusFilters);
+            write_user_status_filters_payload(
+                user_status_filters_path($statusFilterOwnerEmail),
+                $userStatusFilters,
+                $statusFilterMetadata
+            );
         }
 
         $workOrders = array_values(array_filter(
