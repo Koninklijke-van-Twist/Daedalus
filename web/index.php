@@ -2773,7 +2773,9 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             font-size: .72rem;
             font-weight: 600;
             line-height: 1;
-            min-width: 18px;
+            width: 22px;
+            display: inline-flex;
+            justify-content: flex-end;
             text-transform: uppercase;
         }
 
