@@ -103,10 +103,12 @@ $selectedWorkOrderNo = trim((string) ($_GET['workorder'] ?? ''));
 $selectedPersonNoRequest = trim((string) ($_GET['person'] ?? ''));
 $searchQuery = trim((string) ($_GET['q'] ?? ''));
 $statusFiltersRequest = trim((string) ($_GET['status_filters'] ?? ''));
+$webfleetStatusFiltersRequest = trim((string) ($_GET['webfleet_status_filters'] ?? ''));
 $dateFromRequest = trim((string) ($_GET['date_from'] ?? ''));
 $dateToRequest = trim((string) ($_GET['date_to'] ?? ''));
 $ajaxAction = trim((string) ($_GET['ajax'] ?? ''));
 $hasStatusFiltersRequest = array_key_exists('status_filters', $_GET);
+$hasWebfleetStatusFiltersRequest = array_key_exists('webfleet_status_filters', $_GET);
 
 function get_sharepoint_url($selectedWorkOrder)
 {
@@ -262,18 +264,31 @@ function read_user_status_filters_payload(string $path): array
     $raw = read_json_assoc_file($path);
     $filtersRaw = is_array($raw['filters'] ?? null) ? $raw['filters'] : $raw;
     $filters = normalize_status_filter_map($filtersRaw);
+    $webfleetFiltersRaw = is_array($raw['webfleet_filters'] ?? null) ? $raw['webfleet_filters'] : [];
+    $webfleetFilters = normalize_status_filter_map($webfleetFiltersRaw);
     $meta = is_array($raw['meta'] ?? null) ? $raw['meta'] : [];
 
     return [
         'filters' => $filters,
+        'webfleet_filters' => $webfleetFilters,
         'meta' => $meta,
     ];
 }
 
-function write_user_status_filters_payload(string $path, array $filters, array $meta): void
+function write_user_status_filters_payload(string $path, array $filters, array $meta, ?array $webfleetFilters = null): void
 {
+    $existingPayload = read_user_status_filters_payload($path);
+    $persistedWebfleetFilters = is_array($existingPayload['webfleet_filters'] ?? null)
+        ? $existingPayload['webfleet_filters']
+        : [];
+
+    if (is_array($webfleetFilters)) {
+        $persistedWebfleetFilters = normalize_status_filter_map($webfleetFilters);
+    }
+
     write_json_assoc_file($path, [
         'filters' => normalize_status_filter_map($filters),
+        'webfleet_filters' => $persistedWebfleetFilters,
         'meta' => $meta,
     ]);
 }
@@ -1235,6 +1250,47 @@ function status_css_class(string $status): string
     return $slug !== '' ? ('status-' . $slug) : '';
 }
 
+function webfleet_default_status_label(): string
+{
+    return 'Nog niet gestart';
+}
+
+function webfleet_status_catalog(): array
+{
+    return [
+        webfleet_default_status_label(),
+        'Werk gestart',
+        'Werk voltooid',
+    ];
+}
+
+function webfleet_status_label_from_flags(bool $hasStarted, bool $hasCompleted): string
+{
+    if ($hasCompleted) {
+        return 'Werk voltooid';
+    }
+
+    if ($hasStarted) {
+        return 'Werk gestart';
+    }
+
+    return webfleet_default_status_label();
+}
+
+function webfleet_status_badge_class(string $status): string
+{
+    $normalized = strtolower(trim($status));
+    if ($normalized === 'werk gestart') {
+        return 'status-onderhanden';
+    }
+
+    if ($normalized === 'werk voltooid') {
+        return 'status-uitgevoerd';
+    }
+
+    return 'status-gepland';
+}
+
 function normalize_status_filter_map(array $input): array
 {
     $result = [];
@@ -1308,6 +1364,29 @@ function ensure_user_status_filters(string $email, array $catalogStatuses, array
     return $existing;
 }
 
+function ensure_user_webfleet_status_filters(string $email, array $catalogStatuses, array $metadata = []): array
+{
+    $path = user_status_filters_path($email);
+    $payload = read_user_status_filters_payload($path);
+    $existing = is_array($payload['webfleet_filters'] ?? null) ? $payload['webfleet_filters'] : [];
+    $existingMeta = is_array($payload['meta'] ?? null) ? $payload['meta'] : [];
+    $changed = false;
+
+    foreach ($catalogStatuses as $status) {
+        if (!array_key_exists($status, $existing)) {
+            $existing[$status] = true;
+            $changed = true;
+        }
+    }
+
+    if ($changed || !is_file($path) || $existingMeta !== $metadata) {
+        $normalFilters = is_array($payload['filters'] ?? null) ? $payload['filters'] : [];
+        write_user_status_filters_payload($path, $normalFilters, $metadata, $existing);
+    }
+
+    return $existing;
+}
+
 function decode_status_filters_request(string $payload): array
 {
     if ($payload === '') {
@@ -1316,6 +1395,76 @@ function decode_status_filters_request(string $payload): array
 
     $decoded = json_decode($payload, true);
     return is_array($decoded) ? normalize_status_filter_map($decoded) : [];
+}
+
+function fetch_webfleet_status_labels_for_workorders(
+    string $environment,
+    string $company,
+    array $workOrderNos,
+    array $auth
+): array {
+    $normalizedNos = [];
+    foreach ($workOrderNos as $workOrderNo) {
+        $value = trim((string) $workOrderNo);
+        if ($value !== '') {
+            $normalizedNos[$value] = true;
+        }
+    }
+
+    $uniqueNos = array_keys($normalizedNos);
+    $labels = [];
+    foreach ($uniqueNos as $workOrderNo) {
+        $labels[$workOrderNo] = webfleet_default_status_label();
+    }
+
+    if (empty($uniqueNos)) {
+        return $labels;
+    }
+
+    $statesByOrder = [];
+    foreach ($uniqueNos as $workOrderNo) {
+        $statesByOrder[$workOrderNo] = [
+            'has_203' => false,
+            'has_401' => false,
+        ];
+    }
+
+    $chunks = array_chunk($uniqueNos, 20);
+    foreach ($chunks as $chunkNos) {
+        $filter = build_or_filter('Orderno', $chunkNos);
+        if ($filter === '') {
+            continue;
+        }
+
+        $url = odata_company_url($environment, $company, 'WebfleetAggregatedLines', [
+            '$select' => 'Orderno,Order_state',
+            '$filter' => $filter,
+        ]);
+
+        $rows = odata_get_all($url, $auth, odata_ttl('workorders_list'));
+        foreach ($rows as $row) {
+            $orderNo = trim((string) ($row['Orderno'] ?? ''));
+            if ($orderNo === '' || !isset($statesByOrder[$orderNo])) {
+                continue;
+            }
+
+            $state = (int) ($row['Order_state'] ?? 0);
+            if ($state === 203) {
+                $statesByOrder[$orderNo]['has_203'] = true;
+            } elseif ($state === 401) {
+                $statesByOrder[$orderNo]['has_401'] = true;
+            }
+        }
+    }
+
+    foreach ($statesByOrder as $workOrderNo => $flags) {
+        $labels[$workOrderNo] = webfleet_status_label_from_flags(
+            !empty($flags['has_203']),
+            !empty($flags['has_401'])
+        );
+    }
+
+    return $labels;
 }
 
 function fetch_workorder_open_counts(string $environment, string $company, array $resourceNos, array $auth): array
@@ -1603,10 +1752,13 @@ $serviceResources = [];
 $openWorkOrderCounts = [];
 $workOrderRealArticleCounts = [];
 $workOrderMaterialStatusLabels = [];
+$workOrderWebfleetStatusLabels = [];
+$workOrderWebfleetStatusCounts = [];
 $workOrders = [];
 $selectedWorkOrder = null;
 $selectedWorkOrderRealArticleCount = 0;
 $selectedWorkOrderMaterialStatusLabel = 'Onbekend';
+$selectedWorkOrderWebfleetStatusLabel = webfleet_default_status_label();
 $selectedWorkOrderPrimaryContactName = '';
 $selectedWorkOrderVisitAddress = '';
 $taskArticleLines = [];
@@ -1616,15 +1768,27 @@ $workOrderStatusCounts = [];
 $disabledStatusExtraCounts = [];
 $allWorkOrdersCount = 0;
 $statusCatalog = read_status_catalog();
+$webfleetStatusCatalog = webfleet_status_catalog();
 $submittedStatusFilters = decode_status_filters_request($statusFiltersRequest);
+$submittedWebfleetStatusFilters = decode_status_filters_request($webfleetStatusFiltersRequest);
 $statusFilterMetadata = current_status_filter_metadata($statusFilterOwnerEmail);
 $userStatusFilters = ensure_user_status_filters($statusFilterOwnerEmail, $statusCatalog, $statusFilterMetadata);
+$webfleetStatusFilters = ensure_user_webfleet_status_filters($statusFilterOwnerEmail, $webfleetStatusCatalog, $statusFilterMetadata);
+
+if ($hasWebfleetStatusFiltersRequest && $webfleetStatusFiltersRequest !== '') {
+    foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
+        if (array_key_exists($webfleetStatusValue, $submittedWebfleetStatusFilters)) {
+            $webfleetStatusFilters[$webfleetStatusValue] = (bool) $submittedWebfleetStatusFilters[$webfleetStatusValue];
+        }
+    }
+}
 
 if ($selectedWorkOrderNo === '' && $ajaxAction === '') {
     write_user_status_filters_payload(
         user_status_filters_path($statusFilterOwnerEmail),
         $userStatusFilters,
-        $statusFilterMetadata
+        $statusFilterMetadata,
+        $webfleetStatusFilters
     );
 }
 
@@ -1754,6 +1918,24 @@ try {
             $auth
         );
 
+        $workOrderNosForWebfleet = array_map(
+            static fn(array $workOrder): string => trim((string) ($workOrder['No'] ?? '')),
+            $workOrders
+        );
+        $workOrderWebfleetStatusLabels = fetch_webfleet_status_labels_for_workorders(
+            $environment,
+            $company,
+            $workOrderNosForWebfleet,
+            $auth
+        );
+        foreach ($workOrderWebfleetStatusLabels as $webfleetStatusLabel) {
+            $webfleetStatusText = trim((string) $webfleetStatusLabel);
+            if ($webfleetStatusText === '') {
+                $webfleetStatusText = webfleet_default_status_label();
+            }
+            $workOrderWebfleetStatusCounts[$webfleetStatusText] = (int) ($workOrderWebfleetStatusCounts[$webfleetStatusText] ?? 0) + 1;
+        }
+
         $statusMap = [];
         $allWorkOrdersCount = count($workOrders);
         foreach ($workOrders as $workOrder) {
@@ -1774,17 +1956,24 @@ try {
 
         $userStatusFilters = ensure_user_status_filters($statusFilterOwnerEmail, $statusCatalog, $statusFilterMetadata);
 
-        if ($hasStatusFiltersRequest && $statusFiltersRequest !== '') {
+        if (($hasStatusFiltersRequest && $statusFiltersRequest !== '') || ($hasWebfleetStatusFiltersRequest && $webfleetStatusFiltersRequest !== '')) {
             foreach ($statusCatalog as $statusValue) {
                 if (array_key_exists($statusValue, $submittedStatusFilters)) {
                     $userStatusFilters[$statusValue] = (bool) $submittedStatusFilters[$statusValue];
                 }
             }
 
+            foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
+                if (array_key_exists($webfleetStatusValue, $submittedWebfleetStatusFilters)) {
+                    $webfleetStatusFilters[$webfleetStatusValue] = (bool) $submittedWebfleetStatusFilters[$webfleetStatusValue];
+                }
+            }
+
             write_user_status_filters_payload(
                 user_status_filters_path($statusFilterOwnerEmail),
                 $userStatusFilters,
-                $statusFilterMetadata
+                $statusFilterMetadata,
+                $webfleetStatusFilters
             );
         }
 
@@ -1822,17 +2011,25 @@ try {
 
         $workOrders = array_values(array_filter(
             $workOrders,
-            static function (array $workOrder) use ($userStatusFilters): bool {
+            static function (array $workOrder) use ($userStatusFilters, $webfleetStatusFilters, $workOrderWebfleetStatusLabels): bool {
                 $status = trim((string) ($workOrder['Status'] ?? ''));
+                $workOrderNo = trim((string) ($workOrder['No'] ?? ''));
+                $webfleetStatus = trim((string) ($workOrderWebfleetStatusLabels[$workOrderNo] ?? webfleet_default_status_label()));
+
+                $isStatusEnabled = true;
                 if ($status === '') {
-                    return true;
+                    $isStatusEnabled = true;
+                } elseif (array_key_exists($status, $userStatusFilters)) {
+                    $isStatusEnabled = (bool) $userStatusFilters[$status];
+                } else {
+                    $isStatusEnabled = status_enabled_default($status);
                 }
 
-                if (array_key_exists($status, $userStatusFilters)) {
-                    return (bool) $userStatusFilters[$status];
-                }
+                $isWebfleetEnabled = array_key_exists($webfleetStatus, $webfleetStatusFilters)
+                    ? (bool) $webfleetStatusFilters[$webfleetStatus]
+                    : true;
 
-                return status_enabled_default($status);
+                return $isStatusEnabled && $isWebfleetEnabled;
             }
         ));
 
@@ -1874,6 +2071,20 @@ try {
         $selectedWorkOrder = $selectedRows[0] ?? null;
 
         if ($selectedWorkOrder !== null) {
+            if (isset($workOrderWebfleetStatusLabels[$selectedWorkOrderNo])) {
+                $selectedWorkOrderWebfleetStatusLabel = safe_text((string) $workOrderWebfleetStatusLabels[$selectedWorkOrderNo]);
+            } else {
+                $selectedWebfleetMap = fetch_webfleet_status_labels_for_workorders(
+                    $environment,
+                    $company,
+                    [$selectedWorkOrderNo],
+                    $auth
+                );
+                $selectedWorkOrderWebfleetStatusLabel = safe_text((string) (
+                    $selectedWebfleetMap[$selectedWorkOrderNo] ?? webfleet_default_status_label()
+                ));
+            }
+
             $selectedWorkOrderMaterialSummary = fetch_workorder_material_summary_for_workorders(
                 $environment,
                 $company,
@@ -1954,6 +2165,9 @@ $listQuery = [
 $listQuery = array_filter($listQuery, static function ($value): bool {
     return trim((string) $value) !== '';
 });
+if ($hasWebfleetStatusFiltersRequest && $webfleetStatusFiltersRequest !== '') {
+    $listQuery['webfleet_status_filters'] = $webfleetStatusFiltersRequest;
+}
 $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQuery, '', '&', PHP_QUERY_RFC3986)) : '');
 $resourceCountsUrl = 'index.php?' . http_build_query([
     'ajax' => 'resource_counts',
@@ -1970,6 +2184,18 @@ foreach ($statusCatalog as $statusValue) {
 $statusFiltersPayloadValue = json_encode($statusFiltersForModal, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 if (!is_string($statusFiltersPayloadValue)) {
     $statusFiltersPayloadValue = '{}';
+}
+
+$webfleetStatusFiltersForModal = [];
+foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
+    $webfleetStatusFiltersForModal[$webfleetStatusValue] = array_key_exists($webfleetStatusValue, $webfleetStatusFilters)
+        ? (bool) $webfleetStatusFilters[$webfleetStatusValue]
+        : true;
+}
+
+$webfleetStatusFiltersPayloadValue = json_encode($webfleetStatusFiltersForModal, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+if (!is_string($webfleetStatusFiltersPayloadValue)) {
+    $webfleetStatusFiltersPayloadValue = '{}';
 }
 
 $activeStatusFilters = [];
@@ -2223,6 +2449,13 @@ foreach ($statusCatalog as $statusValue) {
             justify-content: space-between;
             align-items: start;
             gap: 10px;
+        }
+
+        .badge-stack {
+            display: inline-flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 6px;
         }
 
         .wo-no {
@@ -2500,13 +2733,28 @@ foreach ($statusCatalog as $statusValue) {
         .status-modal-card {
             position: relative;
             z-index: 1;
-            width: min(100%, 460px);
+            width: min(100%, 620px);
             max-height: min(82vh, 700px);
             overflow: auto;
             background: var(--card);
             border: 1px solid var(--border);
             border-radius: 12px;
             padding: 12px;
+        }
+
+        .status-modal-columns {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+
+        .status-modal-column-title {
+            margin: 0 0 6px;
+            font-size: .84rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: .02em;
         }
 
         .status-modal-title {
@@ -2523,7 +2771,7 @@ foreach ($statusCatalog as $statusValue) {
         .status-modal-list {
             display: grid;
             gap: 8px;
-            margin-bottom: 10px;
+            margin-bottom: 0;
         }
 
         .status-filter-item {
@@ -2867,6 +3115,8 @@ foreach ($statusCatalog as $statusValue) {
                 </div>
                 <input id="status_filters" name="status_filters" type="hidden"
                     value="<?= htmlspecialchars($statusFiltersPayloadValue) ?>" />
+                <input id="webfleet_status_filters" name="webfleet_status_filters" type="hidden"
+                    value="<?= htmlspecialchars($webfleetStatusFiltersPayloadValue) ?>" />
                 <button type="submit">Toepassen</button>
             </div>
         </form>
@@ -2875,27 +3125,52 @@ foreach ($statusCatalog as $statusValue) {
             <div class="status-modal-backdrop" data-status-close></div>
             <div class="status-modal-card" role="dialog" aria-modal="true" aria-labelledby="status-modal-title">
                 <h2 id="status-modal-title" class="status-modal-title">Statusfilter</h2>
-                <p class="status-modal-subtitle">Toon alleen werkorders met deze statussen.</p>
-                <div class="status-modal-list">
-                    <?php if (count($statusCatalog) === 0): ?>
-                        <div class="empty">Geen statussen beschikbaar.</div>
-                    <?php else: ?>
-                        <?php foreach ($statusCatalog as $statusOption): ?>
-                            <?php
-                            $statusCount = (int) ($workOrderStatusCounts[$statusOption] ?? 0);
-                            $statusEnabled = array_key_exists($statusOption, $statusFiltersForModal)
-                                ? (bool) $statusFiltersForModal[$statusOption]
-                                : status_enabled_default($statusOption);
-                            $statusOptionClass = status_css_class($statusOption);
-                            ?>
-                            <label class="status-filter-item">
-                                <input type="checkbox" class="status-filter-checkbox"
-                                    data-status="<?= htmlspecialchars($statusOption) ?>" <?= $statusEnabled ? 'checked' : '' ?> />
-                                <span
-                                    class="status-filter-label <?= htmlspecialchars($statusOptionClass) ?>"><?= htmlspecialchars($statusOption . ' (' . $statusCount . ')') ?></span>
-                            </label>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
+                <p class="status-modal-subtitle">Toon alleen werkorders die voldoen aan beide statusfilters.</p>
+                <div class="status-modal-columns">
+                    <div>
+                        <h3 class="status-modal-column-title">Werkorderstatus</h3>
+                        <div class="status-modal-list">
+                            <?php if (count($statusCatalog) === 0): ?>
+                                <div class="empty">Geen statussen beschikbaar.</div>
+                            <?php else: ?>
+                                <?php foreach ($statusCatalog as $statusOption): ?>
+                                    <?php
+                                    $statusCount = (int) ($workOrderStatusCounts[$statusOption] ?? 0);
+                                    $statusEnabled = array_key_exists($statusOption, $statusFiltersForModal)
+                                        ? (bool) $statusFiltersForModal[$statusOption]
+                                        : status_enabled_default($statusOption);
+                                    $statusOptionClass = status_css_class($statusOption);
+                                    ?>
+                                    <label class="status-filter-item">
+                                        <input type="checkbox" class="status-filter-checkbox"
+                                            data-status="<?= htmlspecialchars($statusOption) ?>" <?= $statusEnabled ? 'checked' : '' ?> />
+                                        <span
+                                            class="status-filter-label <?= htmlspecialchars($statusOptionClass) ?>"><?= htmlspecialchars($statusOption . ' (' . $statusCount . ')') ?></span>
+                                    </label>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <div>
+                        <h3 class="status-modal-column-title">Webfleet</h3>
+                        <div class="status-modal-list">
+                            <?php foreach ($webfleetStatusCatalog as $webfleetStatusOption): ?>
+                                <?php
+                                $webfleetStatusCount = (int) ($workOrderWebfleetStatusCounts[$webfleetStatusOption] ?? 0);
+                                $webfleetStatusEnabled = array_key_exists($webfleetStatusOption, $webfleetStatusFiltersForModal)
+                                    ? (bool) $webfleetStatusFiltersForModal[$webfleetStatusOption]
+                                    : true;
+                                $webfleetStatusOptionClass = webfleet_status_badge_class($webfleetStatusOption);
+                                ?>
+                                <label class="status-filter-item">
+                                    <input type="checkbox" class="webfleet-filter-checkbox"
+                                        data-webfleet-status="<?= htmlspecialchars($webfleetStatusOption) ?>" <?= $webfleetStatusEnabled ? 'checked' : '' ?> />
+                                    <span
+                                        class="status-filter-label <?= htmlspecialchars($webfleetStatusOptionClass) ?>"><?= htmlspecialchars($webfleetStatusOption . ' (' . $webfleetStatusCount . ')') ?></span>
+                                </label>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
                 </div>
                 <div class="status-modal-actions">
                     <button class="button secondary" type="button" data-status-close>Annuleren</button>
@@ -2919,7 +3194,12 @@ foreach ($statusCatalog as $statusValue) {
                     Uitvoerdatum: <?= htmlspecialchars(nl_date((string) ($selectedWorkOrder['Start_Date'] ?? ''))) ?>
                     · Monteur: <?= bc_text_html((string) ($selectedWorkOrder['Resource_Name'] ?? '')) ?>
                 </p>
+                <?php
+                $selectedWorkOrderWebfleetBadgeClass = 'badge ' . webfleet_status_badge_class($selectedWorkOrderWebfleetStatusLabel);
+                ?>
                 <div class="meta">
+                    Webfleet status:
+                    <span class="<?= htmlspecialchars($selectedWorkOrderWebfleetBadgeClass) ?>"><?= htmlspecialchars($selectedWorkOrderWebfleetStatusLabel) ?></span><br />
                     Object:
                     <?= bc_text_html((string) ($selectedWorkOrder['Main_Entity_Description'] ?? '')) ?><br />
                     Component: <a href="<?= get_sharepoint_url($selectedWorkOrder) ?>">
@@ -3063,6 +3343,8 @@ foreach ($statusCatalog as $statusValue) {
                         $workOrderStatusText = safe_text((string) ($workOrder['Status'] ?? ''));
                         $workOrderStatusClass = status_css_class((string) ($workOrder['Status'] ?? ''));
                         $workOrderBadgeClass = $workOrderStatusClass !== '' ? ('badge ' . $workOrderStatusClass) : 'badge neutral';
+                        $workOrderWebfleetStatusLabel = safe_text((string) ($workOrderWebfleetStatusLabels[$workOrderNo] ?? webfleet_default_status_label()));
+                        $workOrderWebfleetBadgeClass = 'badge ' . webfleet_status_badge_class($workOrderWebfleetStatusLabel);
                         $workOrderMaterialStatusLabel = safe_text((string) ($workOrderMaterialStatusLabels[$workOrderNo] ?? 'Onbekend'));
                         $workOrderMaterialBadgeClass = 'badge ' . workorder_material_badge_class($workOrderMaterialStatusLabel);
                         ?>
@@ -3078,8 +3360,12 @@ foreach ($statusCatalog as $statusValue) {
                                         <?= bc_text_html(workorder_task_text($workOrder)) ?>
                                     </h2>
                                 </div>
-                                <span
-                                    class="<?= htmlspecialchars($workOrderBadgeClass) ?>"><?= htmlspecialchars($workOrderStatusText) ?></span>
+                                <div class="badge-stack">
+                                    <span
+                                        class="<?= htmlspecialchars($workOrderWebfleetBadgeClass) ?>"><?= htmlspecialchars($workOrderWebfleetStatusLabel) ?></span>
+                                    <span
+                                        class="<?= htmlspecialchars($workOrderBadgeClass) ?>"><?= htmlspecialchars($workOrderStatusText) ?></span>
+                                </div>
                             </div>
                             <div class="meta">
                                 <b>Uitvoerdatum</b>:
@@ -3163,21 +3449,47 @@ foreach ($statusCatalog as $statusValue) {
             const tipFillDurationMs = 500;
             const shakeRampMs = 1000;
             const drainDurationMs = 2200;
+            const loaderWatchdogMs = 20000;
             let progressRunning = false;
             let fillTimeoutId = null;
             let tipFillTimeoutId = null;
             let burstTimeoutId = null;
             let shakeFrameId = null;
             let shakeStartAt = 0;
+            let loaderWatchdogTimeoutId = null;
+            let isNavigatingAway = false;
+
+            function clearLoaderWatchdog ()
+            {
+                if (loaderWatchdogTimeoutId !== null)
+                {
+                    window.clearTimeout(loaderWatchdogTimeoutId);
+                    loaderWatchdogTimeoutId = null;
+                }
+            }
+
+            function armLoaderWatchdog ()
+            {
+                clearLoaderWatchdog();
+                loaderWatchdogTimeoutId = window.setTimeout(function ()
+                {
+                    if (!isNavigatingAway)
+                    {
+                        hideLoaderImmediately();
+                    }
+                }, loaderWatchdogMs);
+            }
 
             function showLoader ()
             {
                 loaderEl.classList.add('visible');
                 startProgressSequence();
+                armLoaderWatchdog();
             }
 
             function hideLoader ()
             {
+                clearLoaderWatchdog();
                 loaderEl.classList.remove('visible');
             }
 
@@ -3204,6 +3516,7 @@ foreach ($statusCatalog as $statusValue) {
                     window.clearTimeout(burstTimeoutId);
                     burstTimeoutId = null;
                 }
+                clearLoaderWatchdog();
                 if (shakeFrameId !== null)
                 {
                     window.cancelAnimationFrame(shakeFrameId);
@@ -3386,11 +3699,13 @@ foreach ($statusCatalog as $statusValue) {
 
             window.addEventListener('beforeunload', function ()
             {
+                isNavigatingAway = true;
                 showLoader();
             });
 
             window.addEventListener('pageshow', function ()
             {
+                isNavigatingAway = false;
                 hideLoaderImmediately();
             });
 
@@ -3398,14 +3713,33 @@ foreach ($statusCatalog as $statusValue) {
             {
                 if (document.visibilityState === 'hidden')
                 {
+                    isNavigatingAway = true;
                     return;
                 }
+
+                isNavigatingAway = false;
 
                 if (loaderEl.classList.contains('visible') && !progressRunning)
                 {
                     startProgressSequence();
                 }
             });
+
+            function submitFormSafely (formEl)
+            {
+                if (!formEl)
+                {
+                    return;
+                }
+
+                if (typeof formEl.requestSubmit === 'function')
+                {
+                    formEl.requestSubmit();
+                    return;
+                }
+
+                formEl.submit();
+            }
 
             if (loaderTextEl && Array.isArray(loadingTexts) && loadingTexts.length > 0)
             {
@@ -3421,7 +3755,9 @@ foreach ($statusCatalog as $statusValue) {
             const openStatusFilterEl = document.getElementById('open-status-filter');
             const saveStatusFilterEl = document.getElementById('save-status-filter');
             const statusFiltersInputEl = document.getElementById('status_filters');
+            const webfleetStatusFiltersInputEl = document.getElementById('webfleet_status_filters');
             const statusFilterCheckboxEls = Array.from(document.querySelectorAll('.status-filter-checkbox'));
+            const webfleetFilterCheckboxEls = Array.from(document.querySelectorAll('.webfleet-filter-checkbox'));
             const statusCloseEls = Array.from(document.querySelectorAll('[data-status-close]'));
 
             if (pickDayButtonEl && dayPickerInputEl && dateFromEl && dateToEl)
@@ -3457,7 +3793,7 @@ foreach ($statusCatalog as $statusValue) {
                     if (pickDayButtonEl.form)
                     {
                         showLoader();
-                        pickDayButtonEl.form.requestSubmit();
+                        submitFormSafely(pickDayButtonEl.form);
                     }
                 });
             }
@@ -3509,6 +3845,7 @@ foreach ($statusCatalog as $statusValue) {
                 saveStatusFilterEl.addEventListener('click', function ()
                 {
                     const payload = {};
+                    const webfleetPayload = {};
                     statusFilterCheckboxEls.forEach(function (checkboxEl)
                     {
                         const status = (checkboxEl.getAttribute('data-status') || '').trim();
@@ -3519,9 +3856,24 @@ foreach ($statusCatalog as $statusValue) {
                         payload[status] = checkboxEl.checked;
                     });
 
+                    webfleetFilterCheckboxEls.forEach(function (checkboxEl)
+                    {
+                        const status = (checkboxEl.getAttribute('data-webfleet-status') || '').trim();
+                        if (status === '')
+                        {
+                            return;
+                        }
+                        webfleetPayload[status] = checkboxEl.checked;
+                    });
+
                     if (statusFiltersInputEl)
                     {
                         statusFiltersInputEl.value = JSON.stringify(payload);
+                    }
+
+                    if (webfleetStatusFiltersInputEl)
+                    {
+                        webfleetStatusFiltersInputEl.value = JSON.stringify(webfleetPayload);
                     }
 
                     closeStatusModal();
@@ -3529,7 +3881,7 @@ foreach ($statusCatalog as $statusValue) {
                     if (openStatusFilterEl && openStatusFilterEl.form)
                     {
                         showLoader();
-                        openStatusFilterEl.form.requestSubmit();
+                        submitFormSafely(openStatusFilterEl.form);
                     }
                 });
             }
