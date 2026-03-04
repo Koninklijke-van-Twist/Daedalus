@@ -1567,7 +1567,7 @@ if ($selectedWorkOrderNo === '' && $ajaxAction === '') {
 
 $today = new DateTimeImmutable('today');
 $defaultRangeStart = $today;
-$defaultRangeEnd = $today->modify('+28 days');
+$defaultRangeEnd = $today->modify('+7 days');
 $rangeStart = parse_date_ymd($dateFromRequest) ?? $defaultRangeStart;
 $rangeEnd = parse_date_ymd($dateToRequest) ?? $defaultRangeEnd;
 
