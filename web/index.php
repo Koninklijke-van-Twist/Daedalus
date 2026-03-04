@@ -867,91 +867,37 @@ function material_line_status(array $line): array
     $statusCode = material_status_code($statusRaw);
     $binCode = trim((string) ($line['Bin_Code'] ?? ''));
     $binLocationCode = trim((string) ($line['KVT_Bin_Location_Code'] ?? ''));
-    $binDetail = '';
-    if ($binCode !== '') {
-        $binDetail = 'Bin: ' . $binCode;
-        if ($binLocationCode !== '') {
-            $binDetail .= ' · Locatie: ' . $binLocationCode;
-        }
-    }
-    $completelyPicked = is_true_value($line['KVT_Completely_Picked'] ?? false);
-    $qtyPicked = (float) ($line['KVT_Qty_Picked'] ?? 0);
-    $purchaseOrderNo = trim((string) ($line['LVS_Purchase_Order_No'] ?? ''));
     $expectedReceiptDate = trim((string) ($line['KVT_Expected_Receipt_Date'] ?? ''));
-    $outstandingQty = (float) ($line['LVS_Outstanding_Qty_Base'] ?? 0);
+    $badgeClass = workorder_material_badge_class($statusRaw);
+    $isUnknownExpectedDate = $expectedReceiptDate !== '' && strpos($expectedReceiptDate, '0001-01-01') === 0;
+    $hasExpectedDate = $expectedReceiptDate !== '' && !$isUnknownExpectedDate;
+    $detail = '-';
 
     if (in_array($statusCode, ['V', 'G', 'B'], true)) {
-        return [
-            'label' => $statusMaterial,
-            'class' => 'ok',
-            'material_status_label' => $statusMaterial,
-            'detail' => $binDetail !== '' ? $binDetail : 'Bin onbekend',
-        ];
-    }
-
-    if (in_array($statusCode, ['A', 'C'], true)) {
-        return [
-            'label' => $statusMaterial,
-            'class' => 'neutral',
-            'material_status_label' => $statusMaterial,
-            'detail' => 'In handen van servicemonteur',
-        ];
-    }
-
-    if ($statusCode === 'N') {
-        return [
-            'label' => $statusMaterial,
-            'class' => 'neutral',
-            'material_status_label' => $statusMaterial,
-            'detail' => 'Geen materiaal nodig',
-        ];
-    }
-
-    if ($completelyPicked || ($binCode !== '' && $qtyPicked > 0)) {
-        return [
-            'label' => "In bin",
-            'class' => 'ok',
-            'material_status_label' => $statusMaterial,
-            'detail' => $binDetail !== '' ? $binDetail : $statusMaterial,
-        ];
-    }
-
-    if ($purchaseOrderNo !== '' || $expectedReceiptDate !== '' || $outstandingQty > 0) {
-        $rawExpectedDate = trim((string) $expectedReceiptDate);
-        $isUnknownExpectedDate = $rawExpectedDate !== '' && strpos($rawExpectedDate, '0001-01-01') === 0;
-        $hasKnownExpectedDate = $rawExpectedDate !== '' && !$isUnknownExpectedDate;
-
-        $detailParts = [];
-        if ($purchaseOrderNo !== '') {
-            $detailParts[] = 'PO: ' . $purchaseOrderNo;
+        if ($binCode !== '' && $binLocationCode !== '') {
+            $detail = 'Bin: ' . $binCode . ' · Locatie: ' . $binLocationCode;
+        } else {
+            $detail = 'Locatie onbekend';
         }
-
-        if ($rawExpectedDate !== '') {
-            if ($isUnknownExpectedDate) {
-                $detailParts[] = 'Verwacht: Geen levertijd bekend';
-            } else {
-                $detailParts[] = 'Verwacht: ' . nl_date($rawExpectedDate);
-            }
+    } elseif (in_array($statusCode, ['A', 'C'], true)) {
+        $detail = 'Uitgegeven aan monteur';
+    } elseif ($statusCode === 'O') {
+        $detail = '';
+    } elseif (in_array($statusCode, ['O', 'N', 'X', 'T', 'I'], true)) {
+        if ($hasExpectedDate) {
+            $detail = 'Verwacht: ' . nl_date($expectedReceiptDate);
+        } else {
+            $detail = 'Levertijd niet bekend';
         }
-
-        if (empty($detailParts)) {
-            $detailParts[] = $statusMaterial;
-        }
-
-        return [
-            'label' => 'Onbekend',
-            'class' => 'unknown',
-            'material_status_label' => $statusMaterial,
-            'detail' => implode(' · ', $detailParts),
-        ];
+    } else {
+        $detail = 'Levertijd niet bekend';
     }
 
-    $fallbackClass = strtolower($statusMaterial) === 'onbekend' ? 'unknown' : 'neutral';
     return [
         'label' => $statusMaterial,
-        'class' => $fallbackClass,
+        'class' => $badgeClass,
         'material_status_label' => $statusMaterial,
-        'detail' => $binDetail !== '' ? $binDetail : '-',
+        'detail' => $detail,
     ];
 }
 
@@ -2764,7 +2710,9 @@ foreach ($statusCatalog as $statusValue) {
                                 Materiaalstatus:
                                 <?= htmlspecialchars(safe_text((string) ($lineStatus['material_status_label'] ?? 'Onbekend'))) ?>
                             </div>
-                            <div class="status-detail"><?= htmlspecialchars($lineStatus['detail']) ?></div>
+                            <?php if (trim((string) ($lineStatus['detail'] ?? '')) !== ''): ?>
+                                <div class="status-detail"><?= htmlspecialchars((string) $lineStatus['detail']) ?></div>
+                            <?php endif; ?>
                         </article>
                     <?php endforeach; ?>
                 </section>
