@@ -369,6 +369,69 @@ function parse_date_ymd(string $value): ?DateTimeImmutable
     return $parsed;
 }
 
+function workorder_day_key(string $value): string
+{
+    $raw = trim($value);
+    if ($raw === '') {
+        return '';
+    }
+
+    return substr($raw, 0, 10);
+}
+
+function workorder_day_separator_label(string $value): string
+{
+    $dayKey = workorder_day_key($value);
+    if ($dayKey === '') {
+        return 'Onbekende datum';
+    }
+
+    $date = DateTimeImmutable::createFromFormat('Y-m-d', $dayKey);
+    if (!($date instanceof DateTimeImmutable) || $date->format('Y-m-d') !== $dayKey) {
+        return nl_date($dayKey);
+    }
+
+    $weekdays = [
+        1 => 'maandag',
+        2 => 'dinsdag',
+        3 => 'woensdag',
+        4 => 'donderdag',
+        5 => 'vrijdag',
+        6 => 'zaterdag',
+        7 => 'zondag',
+    ];
+
+    $months = [
+        1 => 'januari',
+        2 => 'februari',
+        3 => 'maart',
+        4 => 'april',
+        5 => 'mei',
+        6 => 'juni',
+        7 => 'juli',
+        8 => 'augustus',
+        9 => 'september',
+        10 => 'oktober',
+        11 => 'november',
+        12 => 'december',
+    ];
+
+    $weekdayIndex = (int) $date->format('N');
+    $weekday = (string) ($weekdays[$weekdayIndex] ?? '');
+    $dayOfMonth = (int) $date->format('j');
+    $monthIndex = (int) $date->format('n');
+    $month = (string) ($months[$monthIndex] ?? '');
+    $year = $date->format('Y');
+    $formattedDate = $month !== ''
+        ? ($dayOfMonth . ' ' . $month . ' ' . $year)
+        : nl_date($dayKey);
+    if ($weekday === '') {
+        return $formattedDate;
+    }
+
+    return trim($weekday . ' ' . $formattedDate);
+}
+
 function country_calling_code(string $countryCode): string
 {
     $code = strtoupper(trim($countryCode));
@@ -2106,6 +2169,27 @@ foreach ($statusCatalog as $statusValue) {
             gap: 10px;
         }
 
+        .wo-day-separator {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            color: var(--muted);
+            font-size: .82rem;
+            font-weight: 600;
+            text-transform: none;
+            letter-spacing: .01em;
+            margin: 2px 0;
+        }
+
+        .wo-day-separator::before,
+        .wo-day-separator::after {
+            content: '';
+            height: 1px;
+            background: var(--border);
+            flex: 1;
+        }
+
         .card {
             display: block;
             text-decoration: none;
@@ -2959,11 +3043,21 @@ foreach ($statusCatalog as $statusValue) {
                 <div class="card empty">Geen werkorders gevonden.</div>
             <?php else: ?>
                 <section class="wo-list">
+                    <?php $previousWorkOrderDayKey = ''; ?>
                     <?php foreach ($workOrders as $workOrder): ?>
                         <?php
                         $workOrderHrefParams = $listQuery;
                         $workOrderHrefParams['workorder'] = (string) ($workOrder['No'] ?? '');
                         $workOrderHref = 'index.php?' . http_build_query($workOrderHrefParams, '', '&', PHP_QUERY_RFC3986);
+                        $workOrderStartDateRaw = (string) ($workOrder['Start_Date'] ?? '');
+                        $workOrderDayKey = workorder_day_key($workOrderStartDateRaw);
+                        if ($workOrderDayKey === '') {
+                            $workOrderDayKey = '__onbekend__';
+                        }
+                        $showDaySeparator = $workOrderDayKey !== $previousWorkOrderDayKey;
+                        if ($showDaySeparator) {
+                            $previousWorkOrderDayKey = $workOrderDayKey;
+                        }
                         $workOrderNo = (string) ($workOrder['No'] ?? '');
                         $realArticleCount = (int) ($workOrderRealArticleCounts[$workOrderNo] ?? 0);
                         $workOrderStatusText = safe_text((string) ($workOrder['Status'] ?? ''));
@@ -2972,6 +3066,9 @@ foreach ($statusCatalog as $statusValue) {
                         $workOrderMaterialStatusLabel = safe_text((string) ($workOrderMaterialStatusLabels[$workOrderNo] ?? 'Onbekend'));
                         $workOrderMaterialBadgeClass = 'badge ' . workorder_material_badge_class($workOrderMaterialStatusLabel);
                         ?>
+                        <?php if ($showDaySeparator): ?>
+                            <div class="wo-day-separator"><?= htmlspecialchars(workorder_day_separator_label($workOrderStartDateRaw)) ?></div>
+                        <?php endif; ?>
                         <a class="card" href="<?= htmlspecialchars($workOrderHref) ?>" data-nav-link>
                             <div class="row">
                                 <div>
