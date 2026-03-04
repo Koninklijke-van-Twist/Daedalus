@@ -74,18 +74,23 @@ $companies = [
     'KVT Gas',
 ];
 
+$minute = 60;
+$hour = $minute * 60;
+$day = $hour * 24;
+$week = $day * 7;
+
 $odataTtl = [
-    'resource_by_email' => 600_00,
-    'usersetup_by_email' => 3600_00,
-    'resource_by_userid' => 3600_00,
-    'service_resources' => 3600_00,
-    'workorders_counts' => 300_00,
-    'werkorders_material_flags' => 300_00,
-    'workorders_list' => 600_00,
-    'workorder_detail' => 300_00,
-    'planning_lines' => 300_00,
-    'item_task_flags' => 3600_00,
-    'bin_lookup' => 1800_00,
+    'resource_by_email' => $week,
+    'usersetup_by_email' => $day,
+    'resource_by_userid' => $week,
+    'service_resources' => $day,
+    'workorders_counts' => $hour,
+    'werkorders_material_flags' => $hour,
+    'workorders_list' => $hour,
+    'workorder_detail' => $minute * 15,
+    'planning_lines' => $minute * 15,
+    'item_task_flags' => $hour,
+    'bin_lookup' => $minute * 15,
 ];
 
 $userEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
