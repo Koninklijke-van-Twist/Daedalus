@@ -1291,6 +1291,30 @@ function webfleet_status_badge_class(string $status): string
     return 'status-gepland';
 }
 
+function format_workorder_time_value(string $value): string
+{
+    $raw = trim($value);
+    if ($raw === '') {
+        return '';
+    }
+
+    try {
+        $dateTime = new DateTimeImmutable($raw);
+        return $dateTime->format('H:i');
+    } catch (Throwable $throwable) {
+    }
+
+    if (preg_match('/T(\d{2}:\d{2})/', $raw, $matches) === 1) {
+        return (string) ($matches[1] ?? '');
+    }
+
+    if (preg_match('/^(\d{2}:\d{2})/', $raw, $matches) === 1) {
+        return (string) ($matches[1] ?? '');
+    }
+
+    return '';
+}
+
 function normalize_status_filter_map(array $input): array
 {
     $result = [];
@@ -1436,7 +1460,7 @@ function fetch_webfleet_status_labels_for_workorders(
             continue;
         }
 
-        $url = odata_company_url($environment, $company, 'WebfleetAggregatedLines', [
+        $url = odata_company_url($environment, $company, 'WebfleetImportLines', [
             '$select' => 'Orderno,Order_state',
             '$filter' => $filter,
         ]);
@@ -1759,13 +1783,15 @@ $selectedWorkOrder = null;
 $selectedWorkOrderRealArticleCount = 0;
 $selectedWorkOrderMaterialStatusLabel = 'Onbekend';
 $selectedWorkOrderWebfleetStatusLabel = webfleet_default_status_label();
+$selectedWorkOrderStartTime = '';
+$selectedWorkOrderEndTime = '';
 $selectedWorkOrderPrimaryContactName = '';
 $selectedWorkOrderVisitAddress = '';
 $taskArticleLines = [];
 $planningLines = [];
 $availableWorkorderStatuses = [];
 $workOrderStatusCounts = [];
-$disabledStatusExtraCounts = [];
+$disabledFilterExtraRows = [];
 $allWorkOrdersCount = 0;
 $statusCatalog = read_status_catalog();
 $webfleetStatusCatalog = webfleet_status_catalog();
@@ -1985,28 +2011,85 @@ try {
             ));
         }
 
-        $statusCountsForExtra = [];
         foreach ($workOrdersForExtraStatusCounts as $workOrder) {
+            $workOrderNo = trim((string) ($workOrder['No'] ?? ''));
             $status = trim((string) ($workOrder['Status'] ?? ''));
-            if ($status === '') {
+            $webfleetStatus = trim((string) ($workOrderWebfleetStatusLabels[$workOrderNo] ?? webfleet_default_status_label()));
+            if ($webfleetStatus === '') {
+                $webfleetStatus = webfleet_default_status_label();
+            }
+
+            $isStatusEnabled = true;
+            if ($status !== '') {
+                $isStatusEnabled = array_key_exists($status, $userStatusFilters)
+                    ? (bool) $userStatusFilters[$status]
+                    : status_enabled_default($status);
+            }
+
+            $isWebfleetEnabled = array_key_exists($webfleetStatus, $webfleetStatusFilters)
+                ? (bool) $webfleetStatusFilters[$webfleetStatus]
+                : true;
+
+            if ($isStatusEnabled && $isWebfleetEnabled) {
                 continue;
             }
 
-            $statusCountsForExtra[$status] = (int) ($statusCountsForExtra[$status] ?? 0) + 1;
+            $reasons = [];
+            if (!$isStatusEnabled && $status !== '') {
+                $reasons[] = [
+                    'label' => $status,
+                    'class' => status_css_class($status),
+                ];
+            }
+            if (!$isWebfleetEnabled) {
+                $reasons[] = [
+                    'label' => $webfleetStatus,
+                    'class' => webfleet_status_badge_class($webfleetStatus),
+                ];
+            }
+
+            if (empty($reasons)) {
+                continue;
+            }
+
+            $reasonKeyParts = [];
+            foreach ($reasons as $reason) {
+                $reasonKeyParts[] = (string) ($reason['label'] ?? '') . '|' . (string) ($reason['class'] ?? '');
+            }
+            $reasonKey = implode('||', $reasonKeyParts);
+
+            if (!isset($disabledFilterExtraRows[$reasonKey])) {
+                $disabledFilterExtraRows[$reasonKey] = [
+                    'count' => 0,
+                    'reasons' => $reasons,
+                ];
+            }
+
+            $disabledFilterExtraRows[$reasonKey]['count'] = (int) ($disabledFilterExtraRows[$reasonKey]['count'] ?? 0) + 1;
         }
 
-        foreach ($statusCatalog as $statusValue) {
-            $isEnabled = array_key_exists($statusValue, $userStatusFilters)
-                ? (bool) $userStatusFilters[$statusValue]
-                : status_enabled_default($statusValue);
-            if ($isEnabled) {
-                continue;
-            }
+        if (!empty($disabledFilterExtraRows)) {
+            uasort($disabledFilterExtraRows, static function (array $left, array $right): int {
+                $leftCount = (int) ($left['count'] ?? 0);
+                $rightCount = (int) ($right['count'] ?? 0);
+                if ($leftCount === $rightCount) {
+                    $leftLabel = '';
+                    $rightLabel = '';
 
-            $count = (int) ($statusCountsForExtra[$statusValue] ?? 0);
-            if ($count > 0) {
-                $disabledStatusExtraCounts[$statusValue] = $count;
-            }
+                    $leftReasons = is_array($left['reasons'] ?? null) ? $left['reasons'] : [];
+                    $rightReasons = is_array($right['reasons'] ?? null) ? $right['reasons'] : [];
+                    if (!empty($leftReasons)) {
+                        $leftLabel = strtolower(trim((string) ($leftReasons[0]['label'] ?? '')));
+                    }
+                    if (!empty($rightReasons)) {
+                        $rightLabel = strtolower(trim((string) ($rightReasons[0]['label'] ?? '')));
+                    }
+
+                    return strcmp($leftLabel, $rightLabel);
+                }
+
+                return $rightCount <=> $leftCount;
+            });
         }
 
         $workOrders = array_values(array_filter(
@@ -2064,7 +2147,7 @@ try {
 
     if ($selectedWorkOrderNo !== '') {
         $selectedUrl = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,End_Date,External_Document_No,KVT_Lowest_Present_Status_Mat,KVT_Status_Purchase_Order,Job_No,Job_Task_No,KVT_Memo_Service_Location,KVT_Memo_Component,KVT_Memo,KVT_Memo_Internal_Use_Only',
+            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Lowest_Present_Status_Mat,KVT_Status_Purchase_Order,Job_No,Job_Task_No,KVT_Memo_Service_Location,KVT_Memo_Component,KVT_Memo,KVT_Memo_Internal_Use_Only',
             '$filter' => "No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
         ]);
         $selectedRows = odata_get_all($selectedUrl, $auth, odata_ttl('workorder_detail'));
@@ -2084,6 +2167,9 @@ try {
                     $selectedWebfleetMap[$selectedWorkOrderNo] ?? webfleet_default_status_label()
                 ));
             }
+
+            $selectedWorkOrderStartTime = format_workorder_time_value((string) ($selectedWorkOrder['Start_Time'] ?? ''));
+            $selectedWorkOrderEndTime = format_workorder_time_value((string) ($selectedWorkOrder['End_Time'] ?? ''));
 
             $selectedWorkOrderMaterialSummary = fetch_workorder_material_summary_for_workorders(
                 $environment,
@@ -2442,6 +2528,29 @@ foreach ($statusCatalog as $statusValue) {
             width: 75%;
             margin-left: auto;
             margin-right: auto;
+        }
+
+        .status-extra-list {
+            display: grid;
+            gap: 8px;
+        }
+
+        .status-extra-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-extra-reasons {
+            display: inline-flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-extra-sep {
+            color: var(--muted);
         }
 
         .row {
@@ -3164,7 +3273,8 @@ foreach ($statusCatalog as $statusValue) {
                                 ?>
                                 <label class="status-filter-item">
                                     <input type="checkbox" class="webfleet-filter-checkbox"
-                                        data-webfleet-status="<?= htmlspecialchars($webfleetStatusOption) ?>" <?= $webfleetStatusEnabled ? 'checked' : '' ?> />
+                                        data-webfleet-status="<?= htmlspecialchars($webfleetStatusOption) ?>"
+                                        <?= $webfleetStatusEnabled ? 'checked' : '' ?> />
                                     <span
                                         class="status-filter-label <?= htmlspecialchars($webfleetStatusOptionClass) ?>"><?= htmlspecialchars($webfleetStatusOption . ' (' . $webfleetStatusCount . ')') ?></span>
                                 </label>
@@ -3193,13 +3303,26 @@ foreach ($statusCatalog as $statusValue) {
                 <p class="subtitle">
                     Uitvoerdatum: <?= htmlspecialchars(nl_date((string) ($selectedWorkOrder['Start_Date'] ?? ''))) ?>
                     · Monteur: <?= bc_text_html((string) ($selectedWorkOrder['Resource_Name'] ?? '')) ?>
+                    <?php if ($selectedWorkOrderStartTime !== '' || $selectedWorkOrderEndTime !== ''): ?>
+                        <br />
+                        <?php if ($selectedWorkOrderStartTime !== ''): ?>
+                            Starttijd: <?= htmlspecialchars($selectedWorkOrderStartTime) ?>
+                        <?php endif; ?>
+                        <?php if ($selectedWorkOrderStartTime !== '' && $selectedWorkOrderEndTime !== ''): ?>
+                            ·
+                        <?php endif; ?>
+                        <?php if ($selectedWorkOrderEndTime !== ''): ?>
+                            Eindtijd: <?= htmlspecialchars($selectedWorkOrderEndTime) ?>
+                        <?php endif; ?>
+                    <?php endif; ?>
                 </p>
                 <?php
                 $selectedWorkOrderWebfleetBadgeClass = 'badge ' . webfleet_status_badge_class($selectedWorkOrderWebfleetStatusLabel);
                 ?>
                 <div class="meta">
                     Webfleet status:
-                    <span class="<?= htmlspecialchars($selectedWorkOrderWebfleetBadgeClass) ?>"><?= htmlspecialchars($selectedWorkOrderWebfleetStatusLabel) ?></span><br />
+                    <span
+                        class="<?= htmlspecialchars($selectedWorkOrderWebfleetBadgeClass) ?>"><?= htmlspecialchars($selectedWorkOrderWebfleetStatusLabel) ?></span><br />
                     Object:
                     <?= bc_text_html((string) ($selectedWorkOrder['Main_Entity_Description'] ?? '')) ?><br />
                     Component: <a href="<?= get_sharepoint_url($selectedWorkOrder) ?>">
@@ -3349,7 +3472,8 @@ foreach ($statusCatalog as $statusValue) {
                         $workOrderMaterialBadgeClass = 'badge ' . workorder_material_badge_class($workOrderMaterialStatusLabel);
                         ?>
                         <?php if ($showDaySeparator): ?>
-                            <div class="wo-day-separator"><?= htmlspecialchars(workorder_day_separator_label($workOrderStartDateRaw)) ?></div>
+                            <div class="wo-day-separator"><?= htmlspecialchars(workorder_day_separator_label($workOrderStartDateRaw)) ?>
+                            </div>
                         <?php endif; ?>
                         <a class="card" href="<?= htmlspecialchars($workOrderHref) ?>" data-nav-link>
                             <div class="row">
@@ -3386,12 +3510,29 @@ foreach ($statusCatalog as $statusValue) {
                 </section>
             <?php endif; ?>
 
-            <?php if (count($disabledStatusExtraCounts) > 0): ?>
+            <?php if (count($disabledFilterExtraRows) > 0): ?>
                 <article class="card status-extra-card">
-                    <p class="wo-no">Uitgeschakelde statussen</p>
-                    <div class="meta">
-                        <?php foreach ($disabledStatusExtraCounts as $statusValue => $extraCount): ?>
-                            <?= htmlspecialchars((string) $extraCount) ?> extra werkorder<?= $extraCount === 1 ? '' : 's' ?> met status "<?= htmlspecialchars((string) $statusValue) ?>"<br />
+                    <p class="wo-no">Uitgeschakelde filters</p>
+                    <div class="meta status-extra-list">
+                        <?php foreach ($disabledFilterExtraRows as $disabledFilterExtraRow): ?>
+                            <?php
+                            $extraCount = (int) ($disabledFilterExtraRow['count'] ?? 0);
+                            $extraReasons = is_array($disabledFilterExtraRow['reasons'] ?? null) ? $disabledFilterExtraRow['reasons'] : [];
+                            ?>
+                            <div class="status-extra-row">
+                                <span><?= htmlspecialchars((string) $extraCount) ?> extra
+                                    werkorder<?= $extraCount === 1 ? '' : 's' ?> voor</span>
+                                <span class="status-extra-reasons">
+                                    <?php foreach ($extraReasons as $reasonIndex => $extraReason): ?>
+                                        <?php
+                                        $reasonLabel = trim((string) ($extraReason['label'] ?? ''));
+                                        $reasonClass = trim((string) ($extraReason['class'] ?? ''));
+                                        ?>
+                                        <span
+                                            class="status-filter-label<?= $reasonClass !== '' ? (' ' . htmlspecialchars($reasonClass)) : '' ?>"><?= htmlspecialchars($reasonLabel) ?></span>
+                                    <?php endforeach; ?>
+                                </span>
+                            </div>
                         <?php endforeach; ?>
                     </div>
                 </article>
