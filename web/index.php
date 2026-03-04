@@ -1,7 +1,7 @@
 <?php
-require_once __DIR__ . '/functions.php';
 require __DIR__ . "/auth.php";
 require_once __DIR__ . "/logincheck.php";
+require_once __DIR__ . '/functions.php';
 require_once __DIR__ . "/odata.php";
 
 ob_start();
@@ -93,7 +93,7 @@ $odataTtl = [
     'bin_lookup' => $minute * 15,
 ];
 
-$sessionUserEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+$sessionUserEmail = normalize_email((string) ($_SESSION['user']['email'] ?? ''));
 $userEmail = $sessionUserEmail;
 if ($userEmail === '') {
     $userEmail = 'ict@kvt.nl';
@@ -123,9 +123,14 @@ function status_catalog_path(): string
     return __DIR__ . '/cache/statuses.json';
 }
 
+function normalize_email(string $email): string
+{
+    return trim(strtolower($email));
+}
+
 function user_status_filters_path(string $email): string
 {
-    $normalizedEmail = strtolower(trim($email));
+    $normalizedEmail = normalize_email($email);
     if ($normalizedEmail === '') {
         return __DIR__ . '/cache/users/onbekend.json';
     }
@@ -238,9 +243,10 @@ function current_status_filter_metadata(string $email): array
 {
     $userAgent = trim((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''));
     $device = parse_user_agent_device($userAgent);
+    $normalizedEmail = normalize_email($email);
 
     return [
-        'email' => strtolower(trim($email)) !== '' ? strtolower(trim($email)) : 'onbekend',
+        'email' => $normalizedEmail !== '' ? $normalizedEmail : 'onbekend',
         'ip_address' => request_client_ip(),
         'location' => request_location_hint(),
         'user_agent' => $userAgent !== '' ? $userAgent : 'onbekend',
@@ -302,32 +308,12 @@ function write_json_assoc_file(string $path, array $data): void
 
 function read_user_company_preferences(): array
 {
-    $path = user_pref_path();
-    if (!is_file($path)) {
-        return [];
-    }
-
-    $raw = @file_get_contents($path);
-    if ($raw === false || trim($raw) === '') {
-        return [];
-    }
-
-    $decoded = json_decode($raw, true);
-    return is_array($decoded) ? $decoded : [];
+    return read_json_assoc_file(user_pref_path());
 }
 
 function write_user_company_preferences(array $data): void
 {
-    $path = user_pref_path();
-    $dir = dirname($path);
-    if (!is_dir($dir)) {
-        @mkdir($dir, 0777, true);
-    }
-
-    $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-    if (is_string($json)) {
-        @file_put_contents($path, $json, LOCK_EX);
-    }
+    write_json_assoc_file(user_pref_path(), $data);
 }
 
 function get_user_company_preference(string $email): string
@@ -455,18 +441,30 @@ function country_code_flag_emoji(string $countryCode): string
     return html_entity_decode('&#' . $first . ';&#' . $second . ';', ENT_QUOTES, 'UTF-8');
 }
 
-function fetch_app_resources_by_email(string $environment, string $company, string $email, array $auth): array
-{
-    if ($email === '') {
+function fetch_app_resources_by_field(
+    string $environment,
+    string $company,
+    string $field,
+    string $value,
+    array $auth,
+    string $ttlKey
+): array {
+    $normalizedValue = trim($value);
+    if ($normalizedValue === '') {
         return [];
     }
 
     $url = odata_company_url($environment, $company, 'AppResource', [
         '$select' => 'No,Name,E_Mail,KVT_User_ID',
-        '$filter' => "E_Mail eq '" . odata_quote_string($email) . "'",
+        '$filter' => $field . " eq '" . odata_quote_string($normalizedValue) . "'",
     ]);
 
-    return odata_get_all($url, $auth, odata_ttl('resource_by_email'));
+    return odata_get_all($url, $auth, odata_ttl($ttlKey));
+}
+
+function fetch_app_resources_by_email(string $environment, string $company, string $email, array $auth): array
+{
+    return fetch_app_resources_by_field($environment, $company, 'E_Mail', $email, $auth, 'resource_by_email');
 }
 
 function fetch_user_setup_by_email(string $environment, string $company, string $email, array $auth): array
@@ -485,16 +483,7 @@ function fetch_user_setup_by_email(string $environment, string $company, string 
 
 function fetch_app_resources_by_user_id(string $environment, string $company, string $userId, array $auth): array
 {
-    if ($userId === '') {
-        return [];
-    }
-
-    $url = odata_company_url($environment, $company, 'AppResource', [
-        '$select' => 'No,Name,E_Mail,KVT_User_ID',
-        '$filter' => "KVT_User_ID eq '" . odata_quote_string($userId) . "'",
-    ]);
-
-    return odata_get_all($url, $auth, odata_ttl('resource_by_userid'));
+    return fetch_app_resources_by_field($environment, $company, 'KVT_User_ID', $userId, $auth, 'resource_by_userid');
 }
 
 function fetch_service_resources(string $environment, string $company, array $auth): array
@@ -532,17 +521,52 @@ function fetch_service_resources(string $environment, string $company, array $au
     return $result;
 }
 
-function unique_resource_nos(array $resources): array
+function map_resource_summary(array $resource): array
 {
-    $nos = [];
-    foreach ($resources as $resource) {
-        $no = trim((string) ($resource['No'] ?? ''));
-        if ($no !== '') {
-            $nos[$no] = true;
+    return [
+        'No' => trim((string) ($resource['No'] ?? '')),
+        'Name' => trim((string) ($resource['Name'] ?? '')),
+        'E_Mail' => trim((string) ($resource['E_Mail'] ?? '')),
+    ];
+}
+
+function resolve_selected_resource_name(string $selectedResourceNo, array $serviceResourceMap, array $resourcesForUser): string
+{
+    $normalizedSelectedResourceNo = trim($selectedResourceNo);
+    if ($normalizedSelectedResourceNo === '') {
+        return '';
+    }
+
+    if (isset($serviceResourceMap[$normalizedSelectedResourceNo])) {
+        return safe_text((string) ($serviceResourceMap[$normalizedSelectedResourceNo]['Name'] ?? ''));
+    }
+
+    foreach ($resourcesForUser as $resource) {
+        if (trim((string) ($resource['No'] ?? '')) === $normalizedSelectedResourceNo) {
+            return safe_text((string) ($resource['Name'] ?? ''));
         }
     }
 
-    return array_keys($nos);
+    return '';
+}
+
+function merged_status_catalog(array $statusCatalog, array $availableStatuses): array
+{
+    $catalogMap = [];
+    foreach ($statusCatalog as $statusValue) {
+        $catalogMap[(string) $statusValue] = true;
+    }
+
+    foreach ($availableStatuses as $statusValue) {
+        $normalizedStatus = trim((string) $statusValue);
+        if ($normalizedStatus !== '') {
+            $catalogMap[$normalizedStatus] = true;
+        }
+    }
+
+    $merged = array_keys($catalogMap);
+    sort($merged, SORT_NATURAL | SORT_FLAG_CASE);
+    return $merged;
 }
 
 function build_or_filter(string $field, array $values): string
@@ -1028,7 +1052,7 @@ function material_line_status(array $line): array
         $detail = 'Uitgegeven aan monteur';
     } elseif ($statusCode === 'O') {
         $detail = '';
-    } elseif (in_array($statusCode, ['O', 'N', 'X', 'T', 'I'], true)) {
+    } elseif (in_array($statusCode, ['N', 'X', 'T', 'I'], true)) {
         if ($hasExpectedDate) {
             $detail = 'Verwacht: ' . nl_date($expectedReceiptDate);
         } else {
@@ -1076,24 +1100,29 @@ function is_open_workorder_status(string $status): bool
     return true;
 }
 
+function status_is_exact(string $status, string $expected): bool
+{
+    return trim(strtolower($status)) === trim(strtolower($expected));
+}
+
 function is_executed_workorder_status(string $status): bool
 {
-    return strtolower(trim($status)) === 'uitgevoerd';
+    return status_is_exact($status, 'uitgevoerd');
 }
 
 function is_closed_workorder_status(string $status): bool
 {
-    return strtolower(trim($status)) === 'afgesloten';
+    return status_is_exact($status, 'afgesloten');
 }
 
 function is_checked_workorder_status(string $status): bool
 {
-    return strtolower(trim($status)) === 'gecontroleerd';
+    return status_is_exact($status, 'gecontroleerd');
 }
 
 function is_signed_workorder_status(string $status): bool
 {
-    return strtolower(trim($status)) === 'ondertekend';
+    return status_is_exact($status, 'ondertekend');
 }
 
 function status_enabled_default(string $status): bool
@@ -1294,41 +1323,78 @@ function fetch_werkorders_no_material_needed_map(string $environment, string $co
     return $result;
 }
 
-function fetch_werkorder_no_material_needed_by_no(string $environment, string $company, string $workOrderNo, array $auth): ?bool
-{
-    $workOrderNo = trim($workOrderNo);
-    if ($workOrderNo === '') {
-        return null;
+function odata_fetch_single_row(
+    string $environment,
+    string $company,
+    string $entity,
+    string $select,
+    string $filter,
+    array $auth,
+    int $ttl
+): array {
+    if (trim($entity) === '' || trim($select) === '' || trim($filter) === '') {
+        return [];
     }
 
-    $url = odata_company_url($environment, $company, 'Werkorders', [
-        '$select' => 'No,KVT_No_Material_Needed',
-        '$filter' => "No eq '" . odata_quote_string($workOrderNo) . "'",
+    $url = odata_company_url($environment, $company, $entity, [
+        '$select' => $select,
+        '$filter' => $filter,
     ]);
 
-    $rows = odata_get_all($url, $auth, odata_ttl('workorder_detail'));
-    if (count($rows) === 0) {
+    $rows = odata_get_all($url, $auth, $ttl);
+    $firstRow = $rows[0] ?? null;
+    return is_array($firstRow) ? $firstRow : [];
+}
+
+function fetch_single_werkorder_row_by_no(
+    string $environment,
+    string $company,
+    string $workOrderNo,
+    string $select,
+    array $auth
+): array {
+    $normalizedWorkOrderNo = trim($workOrderNo);
+    if ($normalizedWorkOrderNo === '' || trim($select) === '') {
+        return [];
+    }
+
+    return odata_fetch_single_row(
+        $environment,
+        $company,
+        'Werkorders',
+        $select,
+        "No eq '" . odata_quote_string($normalizedWorkOrderNo) . "'",
+        $auth,
+        odata_ttl('workorder_detail')
+    );
+}
+
+function fetch_werkorder_no_material_needed_by_no(string $environment, string $company, string $workOrderNo, array $auth): ?bool
+{
+    $row = fetch_single_werkorder_row_by_no(
+        $environment,
+        $company,
+        $workOrderNo,
+        'No,KVT_No_Material_Needed',
+        $auth
+    );
+
+    if (empty($row)) {
         return null;
     }
 
-    return is_true_value($rows[0]['KVT_No_Material_Needed'] ?? false);
+    return is_true_value($row['KVT_No_Material_Needed'] ?? false);
 }
 
 function fetch_werkorder_visit_contact_by_no(string $environment, string $company, string $workOrderNo, array $auth): array
 {
-    $workOrderNo = trim($workOrderNo);
-    if ($workOrderNo === '') {
-        return [];
-    }
-
-    $url = odata_company_url($environment, $company, 'Werkorders', [
-        '$select' => 'No,KVT_Primary_Contact_No,KVT_Primary_Contact_Phone_No,Visit_Address,Visit_Address_2,Visit_Post_Code,Visit_City,Visit_Country_Region_Code',
-        '$filter' => "No eq '" . odata_quote_string($workOrderNo) . "'",
-    ]);
-
-    $rows = odata_get_all($url, $auth, odata_ttl('workorder_detail'));
-    $firstRow = $rows[0] ?? null;
-    return is_array($firstRow) ? $firstRow : [];
+    return fetch_single_werkorder_row_by_no(
+        $environment,
+        $company,
+        $workOrderNo,
+        'No,KVT_Primary_Contact_No,KVT_Primary_Contact_Phone_No,Visit_Address,Visit_Address_2,Visit_Post_Code,Visit_City,Visit_Country_Region_Code',
+        $auth
+    );
 }
 
 function fetch_contact_name_by_no(string $environment, string $company, string $contactNo, array $auth): string
@@ -1338,18 +1404,21 @@ function fetch_contact_name_by_no(string $environment, string $company, string $
         return '';
     }
 
-    $url = odata_company_url($environment, $company, 'Contacts', [
-        '$select' => 'No,Name,Name_2',
-        '$filter' => "No eq '" . odata_quote_string($contactNo) . "'",
-    ]);
-
-    $rows = odata_get_all($url, $auth, odata_ttl('workorder_detail'));
-    if (empty($rows) || !is_array($rows[0])) {
+    $row = odata_fetch_single_row(
+        $environment,
+        $company,
+        'Contacts',
+        'No,Name,Name_2',
+        "No eq '" . odata_quote_string($contactNo) . "'",
+        $auth,
+        odata_ttl('workorder_detail')
+    );
+    if (empty($row)) {
         return '';
     }
 
-    $name = trim((string) ($rows[0]['Name'] ?? ''));
-    $name2 = trim((string) ($rows[0]['Name_2'] ?? ''));
+    $name = trim((string) ($row['Name'] ?? ''));
+    $name2 = trim((string) ($row['Name_2'] ?? ''));
     return trim($name . ($name2 !== '' ? (' ' . $name2) : ''));
 }
 
@@ -1360,17 +1429,20 @@ function fetch_component_parking_address_by_no(string $environment, string $comp
         return '';
     }
 
-    $url = odata_company_url($environment, $company, 'AppComponentCard', [
-        '$select' => 'No,KVT_Parking_Address',
-        '$filter' => "No eq '" . odata_quote_string($componentNo) . "'",
-    ]);
-
-    $rows = odata_get_all($url, $auth, odata_ttl('workorder_detail'));
-    if (empty($rows) || !is_array($rows[0])) {
+    $row = odata_fetch_single_row(
+        $environment,
+        $company,
+        'AppComponentCard',
+        'No,KVT_Parking_Address',
+        "No eq '" . odata_quote_string($componentNo) . "'",
+        $auth,
+        odata_ttl('workorder_detail')
+    );
+    if (empty($row)) {
         return '';
     }
 
-    return trim((string) ($rows[0]['KVT_Parking_Address'] ?? ''));
+    return trim((string) ($row['KVT_Parking_Address'] ?? ''));
 }
 
 function build_week_chunks(DateTimeImmutable $startDate, DateTimeImmutable $endDate): array
@@ -1478,6 +1550,7 @@ $taskArticleLines = [];
 $planningLines = [];
 $availableWorkorderStatuses = [];
 $workOrderStatusCounts = [];
+$disabledStatusExtraCounts = [];
 $allWorkOrdersCount = 0;
 $statusCatalog = read_status_catalog();
 $submittedStatusFilters = decode_status_filters_request($statusFiltersRequest);
@@ -1583,11 +1656,7 @@ try {
     $serviceResources = fetch_service_resources($environment, $company, $auth);
     if (count($serviceResources) === 0) {
         foreach ($resourcesForUser as $resource) {
-            $serviceResources[] = [
-                'No' => trim((string) ($resource['No'] ?? '')),
-                'Name' => trim((string) ($resource['Name'] ?? '')),
-                'E_Mail' => trim((string) ($resource['E_Mail'] ?? '')),
-            ];
+            $serviceResources[] = map_resource_summary($resource);
         }
     }
 
@@ -1610,18 +1679,7 @@ try {
         $selectedResourceNo = (string) ($serviceResources[0]['No'] ?? '');
     }
 
-    if ($selectedResourceNo !== '') {
-        if (isset($serviceResourceMap[$selectedResourceNo])) {
-            $selectedResourceName = safe_text((string) ($serviceResourceMap[$selectedResourceNo]['Name'] ?? ''));
-        } else {
-            foreach ($resourcesForUser as $resource) {
-                if (trim((string) ($resource['No'] ?? '')) === $selectedResourceNo) {
-                    $selectedResourceName = safe_text((string) ($resource['Name'] ?? ''));
-                    break;
-                }
-            }
-        }
-    }
+    $selectedResourceName = resolve_selected_resource_name($selectedResourceNo, $serviceResourceMap, $resourcesForUser);
 
     if ($selectedResourceNo !== '') {
         $workOrders = fetch_app_workorders_chunked(
@@ -1645,22 +1703,9 @@ try {
         $availableWorkorderStatuses = array_keys($statusMap);
         sort($availableWorkorderStatuses, SORT_NATURAL | SORT_FLAG_CASE);
 
-        $statusCatalogMap = [];
-        foreach ($statusCatalog as $statusValue) {
-            $statusCatalogMap[$statusValue] = true;
-        }
-
-        $catalogChanged = false;
-        foreach ($availableWorkorderStatuses as $statusValue) {
-            if (!isset($statusCatalogMap[$statusValue])) {
-                $statusCatalogMap[$statusValue] = true;
-                $catalogChanged = true;
-            }
-        }
-
-        if ($catalogChanged) {
-            $statusCatalog = array_keys($statusCatalogMap);
-            sort($statusCatalog, SORT_NATURAL | SORT_FLAG_CASE);
+        $mergedStatusCatalog = merged_status_catalog($statusCatalog, $availableWorkorderStatuses);
+        if ($mergedStatusCatalog !== $statusCatalog) {
+            $statusCatalog = $mergedStatusCatalog;
             write_status_catalog($statusCatalog);
         }
 
@@ -1678,6 +1723,38 @@ try {
                 $userStatusFilters,
                 $statusFilterMetadata
             );
+        }
+
+        $workOrdersForExtraStatusCounts = $workOrders;
+        if ($searchQuery !== '') {
+            $workOrdersForExtraStatusCounts = array_values(array_filter(
+                $workOrdersForExtraStatusCounts,
+                static fn(array $workOrder): bool => workorder_matches_query($workOrder, $searchQuery)
+            ));
+        }
+
+        $statusCountsForExtra = [];
+        foreach ($workOrdersForExtraStatusCounts as $workOrder) {
+            $status = trim((string) ($workOrder['Status'] ?? ''));
+            if ($status === '') {
+                continue;
+            }
+
+            $statusCountsForExtra[$status] = (int) ($statusCountsForExtra[$status] ?? 0) + 1;
+        }
+
+        foreach ($statusCatalog as $statusValue) {
+            $isEnabled = array_key_exists($statusValue, $userStatusFilters)
+                ? (bool) $userStatusFilters[$statusValue]
+                : status_enabled_default($statusValue);
+            if ($isEnabled) {
+                continue;
+            }
+
+            $count = (int) ($statusCountsForExtra[$statusValue] ?? 0);
+            if ($count > 0) {
+                $disabledStatusExtraCounts[$statusValue] = $count;
+            }
         }
 
         $workOrders = array_values(array_filter(
@@ -2046,6 +2123,13 @@ foreach ($statusCatalog as $statusValue) {
         .feedback-card {
             margin-top: 12px;
             width: 50%;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .status-extra-card {
+            margin-top: 12px;
+            width: 75%;
             margin-left: auto;
             margin-right: auto;
         }
@@ -2917,6 +3001,17 @@ foreach ($statusCatalog as $statusValue) {
                         </a>
                     <?php endforeach; ?>
                 </section>
+            <?php endif; ?>
+
+            <?php if (count($disabledStatusExtraCounts) > 0): ?>
+                <article class="card status-extra-card">
+                    <p class="wo-no">Uitgeschakelde statussen</p>
+                    <div class="meta">
+                        <?php foreach ($disabledStatusExtraCounts as $statusValue => $extraCount): ?>
+                            <?= htmlspecialchars((string) $extraCount) ?> extra werkorder<?= $extraCount === 1 ? '' : 's' ?> met status "<?= htmlspecialchars((string) $statusValue) ?>"<br />
+                        <?php endforeach; ?>
+                    </div>
+                </article>
             <?php endif; ?>
 
             <article class="card feedback-card">
