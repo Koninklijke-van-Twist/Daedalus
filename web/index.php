@@ -3235,7 +3235,7 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                                 $openCount = (int) ($openWorkOrderCounts[$resourceNo] ?? 0);
                                 $optionLabel = $baseName;
                                 if (isset($openWorkOrderCounts[$resourceNo])) {
-                                    $optionLabel .= ' (' . $openCount . ' open werkorders)';
+                                    $optionLabel .= ' (' . $openCount . ' werkorders)';
                                 }
                                 ?>
                                 <?= htmlspecialchars($optionLabel) ?>
@@ -4155,7 +4155,7 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
 
                                 if (hasCount)
                                 {
-                                    optionEl.textContent = baseName + ' (' + openCount + ' open werkorders)';
+                                    optionEl.textContent = baseName + ' (' + openCount + ' werkorders)';
                                 }
                             });
 
