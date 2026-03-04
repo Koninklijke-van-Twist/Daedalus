@@ -1214,6 +1214,26 @@ function fetch_contact_name_by_no(string $environment, string $company, string $
     return trim($name . ($name2 !== '' ? (' ' . $name2) : ''));
 }
 
+function fetch_component_parking_address_by_no(string $environment, string $company, string $componentNo, array $auth): string
+{
+    $componentNo = trim($componentNo);
+    if ($componentNo === '') {
+        return '';
+    }
+
+    $url = odata_company_url($environment, $company, 'AppComponentCard', [
+        '$select' => 'No,KVT_Parking_Address',
+        '$filter' => "No eq '" . odata_quote_string($componentNo) . "'",
+    ]);
+
+    $rows = odata_get_all($url, $auth, odata_ttl('workorder_detail'));
+    if (empty($rows) || !is_array($rows[0])) {
+        return '';
+    }
+
+    return trim((string) ($rows[0]['KVT_Parking_Address'] ?? ''));
+}
+
 function build_week_chunks(DateTimeImmutable $startDate, DateTimeImmutable $endDate): array
 {
     if ($endDate < $startDate) {
@@ -1314,6 +1334,7 @@ $selectedWorkOrder = null;
 $selectedWorkOrderRealArticleCount = 0;
 $selectedWorkOrderMaterialStatusLabel = 'Onbekend';
 $selectedWorkOrderPrimaryContactName = '';
+$selectedWorkOrderVisitAddress = '';
 $taskArticleLines = [];
 $planningLines = [];
 $availableWorkorderStatuses = [];
@@ -1582,6 +1603,16 @@ try {
                     $environment,
                     $company,
                     $primaryContactNo,
+                    $auth
+                );
+            }
+
+            $componentNo = trim((string) ($selectedWorkOrder['Component_No'] ?? ''));
+            if ($componentNo !== '') {
+                $selectedWorkOrderVisitAddress = fetch_component_parking_address_by_no(
+                    $environment,
+                    $company,
+                    $componentNo,
                     $auth
                 );
             }
@@ -2583,44 +2614,9 @@ foreach ($statusCatalog as $statusValue) {
                     $primaryContactName = trim((string) $selectedWorkOrderPrimaryContactName);
                     $primaryContactPhone = trim((string) ($selectedWorkOrder['KVT_Primary_Contact_Phone_No'] ?? ''));
 
-                    $visitAddress = trim((string) ($selectedWorkOrder['Visit_Address'] ?? ''));
-                    $visitAddress2 = trim((string) ($selectedWorkOrder['Visit_Address_2'] ?? ''));
-                    $visitPostCode = trim((string) ($selectedWorkOrder['Visit_Post_Code'] ?? ''));
-                    $visitCity = trim((string) ($selectedWorkOrder['Visit_City'] ?? ''));
+                    $visitAddressText = trim((string) $selectedWorkOrderVisitAddress);
                     $visitCountryCode = trim((string) ($selectedWorkOrder['Visit_Country_Region_Code'] ?? ''));
                     $primaryContactPhoneHref = phone_tel_href($primaryContactPhone, $visitCountryCode);
-
-                    $visitAddressParts = [];
-                    if ($visitAddress !== '') {
-                        $visitAddressParts[] = $visitAddress;
-                    }
-                    if ($visitAddress2 !== '') {
-                        $visitAddressParts[] = $visitAddress2;
-                    }
-
-                    $visitPostAndCity = '';
-                    if ($visitPostCode !== '' && $visitCity !== '') {
-                        $visitPostAndCity = $visitPostCode . ', ' . $visitCity;
-                    } elseif ($visitPostCode !== '') {
-                        $visitPostAndCity = $visitPostCode;
-                    } elseif ($visitCity !== '') {
-                        $visitPostAndCity = $visitCity;
-                    }
-
-                    if ($visitPostAndCity !== '') {
-                        $visitAddressParts[] = $visitPostAndCity;
-                    }
-
-                    $visitCountryText = '';
-                    if ($visitCountryCode !== '') {
-                        $countryPrefix = country_code_flag_emoji($visitCountryCode);
-                        $visitCountryText = trim($countryPrefix);
-                    }
-
-                    $visitAddressText = implode(', ', $visitAddressParts);
-                    if ($visitCountryText !== '') {
-                        $visitAddressText = trim($visitAddressText . ' ' . $visitCountryText);
-                    }
                     $hasVisitInfo = $visitAddressText !== '';
                     ?>
                     <?php if ($primaryContactPhone !== '' || $hasVisitInfo): ?>
