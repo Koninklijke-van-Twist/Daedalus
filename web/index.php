@@ -2291,6 +2291,13 @@ foreach ($statusCatalog as $statusValue) {
     }
 }
 
+$activeWebfleetFilters = [];
+foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
+    if (!empty($webfleetStatusFiltersForModal[$webfleetStatusValue])) {
+        $activeWebfleetFilters[] = $webfleetStatusValue;
+    }
+}
+
 ?>
 
 <!doctype html>
@@ -2728,7 +2735,7 @@ foreach ($statusCatalog as $statusValue) {
         .toolbar .actions {
             display: flex;
             justify-content: flex-end;
-            align-items: flex-end;
+            align-items: flex-start;
             gap: 8px;
             flex-wrap: wrap;
         }
@@ -2742,12 +2749,32 @@ foreach ($statusCatalog as $statusValue) {
             margin-right: 0;
         }
 
+        .toolbar .actions .active-filter-groups {
+            display: grid;
+            gap: 4px;
+            flex: 1 1 auto;
+            min-width: 120px;
+        }
+
         .toolbar .actions .active-filter-chips {
             display: flex;
             flex-wrap: wrap;
+            gap: 0;
+        }
+
+        .toolbar .actions .active-filter-row {
+            display: flex;
+            align-items: center;
             gap: 6px;
-            flex: 1 1 auto;
-            min-width: 120px;
+        }
+
+        .toolbar .actions .active-filter-prefix {
+            color: var(--muted);
+            font-size: .72rem;
+            font-weight: 600;
+            line-height: 1;
+            min-width: 18px;
+            text-transform: uppercase;
         }
 
         .active-filter-chip {
@@ -3214,13 +3241,29 @@ foreach ($statusCatalog as $statusValue) {
             </div>
             <div class="actions">
                 <button id="open-status-filter" class="status-filter-trigger" type="button">Statusfilter</button>
-                <div class="active-filter-chips">
-                    <?php foreach ($activeStatusFilters as $activeStatus): ?>
-                        <?php $activeStatusClass = status_css_class($activeStatus); ?>
-                        <span class="active-filter-chip <?= htmlspecialchars($activeStatusClass) ?>"
-                            title="<?= htmlspecialchars($activeStatus) ?>"
-                            aria-label="<?= htmlspecialchars($activeStatus) ?>"></span>
-                    <?php endforeach; ?>
+                <div class="active-filter-groups">
+                    <div class="active-filter-row" aria-label="Actieve werkorderstatusfilters">
+                        <span class="active-filter-prefix">WO</span>
+                        <div class="active-filter-chips">
+                            <?php foreach ($activeStatusFilters as $activeStatus): ?>
+                                <?php $activeStatusClass = status_css_class($activeStatus); ?>
+                                <span class="active-filter-chip <?= htmlspecialchars($activeStatusClass) ?>"
+                                    title="<?= htmlspecialchars($activeStatus) ?>"
+                                    aria-label="<?= htmlspecialchars($activeStatus) ?>"></span>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                    <div class="active-filter-row" aria-label="Actieve Webfleet-filters">
+                        <span class="active-filter-prefix">WF</span>
+                        <div class="active-filter-chips">
+                            <?php foreach ($activeWebfleetFilters as $activeWebfleetStatus): ?>
+                                <?php $activeWebfleetClass = webfleet_status_badge_class($activeWebfleetStatus); ?>
+                                <span class="active-filter-chip <?= htmlspecialchars($activeWebfleetClass) ?>"
+                                    title="<?= htmlspecialchars($activeWebfleetStatus) ?>"
+                                    aria-label="<?= htmlspecialchars($activeWebfleetStatus) ?>"></span>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
                 </div>
                 <input id="status_filters" name="status_filters" type="hidden"
                     value="<?= htmlspecialchars($statusFiltersPayloadValue) ?>" />
