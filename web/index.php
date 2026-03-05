@@ -3112,15 +3112,19 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             background: #e9eff7;
             overflow: visible;
             transform-origin: center;
+            z-index: 0;
+            isolation: isolate;
         }
 
         .loader-progress-fill {
+            position: relative;
             height: 100%;
             width: 0%;
             border-radius: 999px 0 0 999px;
             background: #4c89d3;
             /*            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);*/
             transform-origin: bottom;
+            z-index: 2;
         }
 
         .loader-progress-fill.draining {
@@ -3173,6 +3177,7 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             opacity: 0;
             pointer-events: none;
             overflow: visible;
+            z-index: -1;
         }
 
         .loader-progress-spill path {
