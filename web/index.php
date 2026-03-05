@@ -682,7 +682,6 @@ function workorder_sort_key(array $row): string
 {
     $date = trim((string) ($row['Start_Date'] ?? ''));
     $time = format_workorder_time_value((string) ($row['Start_Time'] ?? ''));
-    $workOrderNo = trim((string) ($row['No'] ?? ''));
 
     if ($date === '') {
         $date = '9999-12-31';
@@ -692,7 +691,7 @@ function workorder_sort_key(array $row): string
         $time = '99:99';
     }
 
-    return $date . '|' . $time . '|' . $workOrderNo;
+    return $date . '|' . $time;
 }
 
 function material_status_label(string $status): string
@@ -2167,8 +2166,30 @@ try {
             ));
         }
 
-        usort($workOrders, static function (array $left, array $right): int {
-            return strcmp(workorder_sort_key($left), workorder_sort_key($right));
+        usort($workOrders, static function (array $left, array $right) use ($workOrderWebfleetStatusLabels): int {
+            $dateTimeCompare = strcmp(workorder_sort_key($left), workorder_sort_key($right));
+            if ($dateTimeCompare !== 0) {
+                return $dateTimeCompare;
+            }
+
+            $leftStatus = strtolower(trim((string) ($left['Status'] ?? '')));
+            $rightStatus = strtolower(trim((string) ($right['Status'] ?? '')));
+            $statusCompare = strcmp($leftStatus, $rightStatus);
+            if ($statusCompare !== 0) {
+                return $statusCompare;
+            }
+
+            $leftNo = trim((string) ($left['No'] ?? ''));
+            $rightNo = trim((string) ($right['No'] ?? ''));
+
+            $leftWebfleetStatus = strtolower(trim((string) ($workOrderWebfleetStatusLabels[$leftNo] ?? webfleet_default_status_label())));
+            $rightWebfleetStatus = strtolower(trim((string) ($workOrderWebfleetStatusLabels[$rightNo] ?? webfleet_default_status_label())));
+            $webfleetCompare = strcmp($leftWebfleetStatus, $rightWebfleetStatus);
+            if ($webfleetCompare !== 0) {
+                return $webfleetCompare;
+            }
+
+            return strcmp($leftNo, $rightNo);
         });
 
         $workOrderNosForCounts = array_map(
