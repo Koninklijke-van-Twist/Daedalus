@@ -112,7 +112,11 @@ $hasWebfleetStatusFiltersRequest = array_key_exists('webfleet_status_filters', $
 
 function get_sharepoint_url($selectedWorkOrder)
 {
-    return "https://kvtnl.sharepoint.com/sites/KVTAlgemeen/gedeelde%20documenten/General/Equipments/{$selectedWorkOrder['Component_No']}%20-%20{$selectedWorkOrder['Component_Description']}";
+    $componentNo = normalize_compact_spaces((string) ($selectedWorkOrder['Component_No'] ?? ''));
+    $componentDescription = normalize_compact_spaces((string) ($selectedWorkOrder['Component_Description'] ?? ''));
+    $pathSegment = rawurlencode($componentNo) . '%20-%20' . rawurlencode($componentDescription);
+
+    return 'https://kvtnl.sharepoint.com/sites/KVTAlgemeen/gedeelde%20documenten/General/Equipments/' . $pathSegment;
 }
 
 function user_pref_path(): string
@@ -128,6 +132,15 @@ function status_catalog_path(): string
 function normalize_email(string $email): string
 {
     return trim(strtolower($email));
+}
+
+function normalize_compact_spaces(string $value): string
+{
+    $normalized = str_replace(["\r", "\n"], ' ', $value);
+    $normalized = preg_replace('/[ \t]{2,}/', ' ', $normalized);
+    $normalized = is_string($normalized) ? $normalized : $value;
+
+    return rtrim($normalized);
 }
 
 function user_status_filters_path(string $email): string
@@ -668,11 +681,18 @@ function build_or_filter(string $field, array $values): string
 function workorder_sort_key(array $row): string
 {
     $date = trim((string) ($row['Start_Date'] ?? ''));
-    if ($date !== '') {
-        return $date;
+    $time = format_workorder_time_value((string) ($row['Start_Time'] ?? ''));
+    $workOrderNo = trim((string) ($row['No'] ?? ''));
+
+    if ($date === '') {
+        $date = '9999-12-31';
     }
 
-    return '9999-12-31';
+    if ($time === '') {
+        $time = '99:99';
+    }
+
+    return $date . '|' . $time . '|' . $workOrderNo;
 }
 
 function material_status_label(string $status): string
@@ -1759,9 +1779,9 @@ function fetch_app_workorders_chunked(
             . " and Start_Date le " . $end;
 
         $url = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,End_Date,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
+            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
             '$filter' => $filter,
-            '$orderby' => 'Start_Date asc,No asc',
+            '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
         ]);
 
         $rows = odata_get_all($url, $auth, odata_ttl('workorders_list'));
@@ -3587,6 +3607,16 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                         $workOrderWebfleetBadgeClass = 'badge ' . webfleet_status_badge_class($workOrderWebfleetStatusLabel);
                         $workOrderMaterialStatusLabel = safe_text((string) ($workOrderMaterialStatusLabels[$workOrderNo] ?? 'Onbekend'));
                         $workOrderMaterialBadgeClass = 'badge ' . workorder_material_badge_class($workOrderMaterialStatusLabel);
+                        $workOrderStartTime = format_workorder_time_value((string) ($workOrder['Start_Time'] ?? ''));
+                        $workOrderEndTime = format_workorder_time_value((string) ($workOrder['End_Time'] ?? ''));
+                        $workOrderTimeRangeText = '';
+                        if ($workOrderStartTime !== '' && $workOrderEndTime !== '') {
+                            $workOrderTimeRangeText = $workOrderStartTime . ' t/m ' . $workOrderEndTime;
+                        } elseif ($workOrderStartTime !== '') {
+                            $workOrderTimeRangeText = $workOrderStartTime;
+                        } elseif ($workOrderEndTime !== '') {
+                            $workOrderTimeRangeText = $workOrderEndTime;
+                        }
                         ?>
                         <?php if ($showDaySeparator): ?>
                             <div class="wo-day-separator"><?= htmlspecialchars(workorder_day_separator_label($workOrderStartDateRaw)) ?>
@@ -3610,7 +3640,10 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                             </div>
                             <div class="meta">
                                 <b>Uitvoerdatum</b>:
-                                <?= htmlspecialchars(nl_date((string) ($workOrder['Start_Date'] ?? ''))) ?><br />
+                                <?= htmlspecialchars(nl_date((string) ($workOrder['Start_Date'] ?? ''))) ?>
+                                <?php if ($workOrderTimeRangeText !== ''): ?>
+                                    · <?= htmlspecialchars($workOrderTimeRangeText) ?>
+                                <?php endif; ?><br />
                                 <b>Object</b>:
                                 <?= bc_text_html((string) ($workOrder['Main_Entity_Description'] ?? '')) ?><br />
                                 <b>Component</b>:
