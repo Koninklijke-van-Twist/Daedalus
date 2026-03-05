@@ -2863,6 +2863,54 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             font-weight: 600;
         }
 
+        .toolbar button.is-attention-bounce {
+            animation: applyButtonBounce .95s cubic-bezier(.22, .96, .35, 1);
+        }
+
+        @keyframes applyButtonBounce {
+            0% {
+                transform: translateY(0) scale(1);
+            }
+
+            12% {
+                transform: translateY(-6px) scale(1.03);
+            }
+
+            24% {
+                transform: translateY(0) scale(1);
+            }
+
+            38% {
+                transform: translateY(-5px) scale(1.025);
+            }
+
+            50% {
+                transform: translateY(0) scale(1);
+            }
+
+            64% {
+                transform: translateY(-4px) scale(1.02);
+            }
+
+            76% {
+                transform: translateY(0) scale(1);
+            }
+
+            88% {
+                transform: translateY(-2px) scale(1.01);
+            }
+
+            100% {
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .toolbar button.is-attention-bounce {
+                animation: none;
+            }
+        }
+
         .button {
             border: 1px solid var(--primary);
             background: var(--primary);
@@ -3295,7 +3343,7 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                     value="<?= htmlspecialchars($statusFiltersPayloadValue) ?>" />
                 <input id="webfleet_status_filters" name="webfleet_status_filters" type="hidden"
                     value="<?= htmlspecialchars($webfleetStatusFiltersPayloadValue) ?>" />
-                <button type="submit">Toepassen</button>
+                <button id="apply-filters-button" type="submit">Toepassen</button>
             </div>
         </form>
 
@@ -3959,6 +4007,8 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             const personSelectEl = document.getElementById('person');
             const dateFromEl = document.getElementById('date_from');
             const dateToEl = document.getElementById('date_to');
+            const searchInputEl = document.getElementById('q');
+            const applyFiltersButtonEl = document.getElementById('apply-filters-button');
             const pickDayButtonEl = document.getElementById('pick-day');
             const dayPickerInputEl = document.getElementById('date_day');
             const statusModalEl = document.getElementById('status-filter-modal');
@@ -3969,6 +4019,30 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             const statusFilterCheckboxEls = Array.from(document.querySelectorAll('.status-filter-checkbox'));
             const webfleetFilterCheckboxEls = Array.from(document.querySelectorAll('.webfleet-filter-checkbox'));
             const statusCloseEls = Array.from(document.querySelectorAll('[data-status-close]'));
+            let searchApplyHintTimeoutId = 0;
+
+            function nudgeApplyButton ()
+            {
+                if (!applyFiltersButtonEl)
+                {
+                    return;
+                }
+
+                applyFiltersButtonEl.classList.remove('is-attention-bounce');
+
+                // Force reflow so repeated nudges retrigger the animation.
+                void applyFiltersButtonEl.offsetWidth;
+
+                applyFiltersButtonEl.classList.add('is-attention-bounce');
+            }
+
+            if (applyFiltersButtonEl)
+            {
+                applyFiltersButtonEl.addEventListener('animationend', function ()
+                {
+                    applyFiltersButtonEl.classList.remove('is-attention-bounce');
+                });
+            }
 
             if (pickDayButtonEl && dayPickerInputEl && dateFromEl && dateToEl)
             {
@@ -4005,6 +4079,41 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                         showLoader();
                         submitFormSafely(pickDayButtonEl.form);
                     }
+                });
+            }
+
+            if (dateFromEl)
+            {
+                dateFromEl.addEventListener('change', function ()
+                {
+                    nudgeApplyButton();
+                });
+            }
+
+            if (dateToEl)
+            {
+                dateToEl.addEventListener('change', function ()
+                {
+                    nudgeApplyButton();
+                });
+            }
+
+            if (searchInputEl)
+            {
+                searchInputEl.addEventListener('input', function ()
+                {
+                    if (searchApplyHintTimeoutId)
+                    {
+                        window.clearTimeout(searchApplyHintTimeoutId);
+                    }
+
+                    searchApplyHintTimeoutId = window.setTimeout(function ()
+                    {
+                        if ((searchInputEl.value || '').trim() !== '')
+                        {
+                            nudgeApplyButton();
+                        }
+                    }, 1000);
                 });
             }
 
