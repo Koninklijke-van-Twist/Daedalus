@@ -2174,7 +2174,7 @@ try {
 
             $leftStatus = strtolower(trim((string) ($left['Status'] ?? '')));
             $rightStatus = strtolower(trim((string) ($right['Status'] ?? '')));
-            $statusCompare = strcmp($leftStatus, $rightStatus);
+            $statusCompare = strcmp($rightStatus, $leftStatus);
             if ($statusCompare !== 0) {
                 return $statusCompare;
             }
@@ -2184,7 +2184,7 @@ try {
 
             $leftWebfleetStatus = strtolower(trim((string) ($workOrderWebfleetStatusLabels[$leftNo] ?? webfleet_default_status_label())));
             $rightWebfleetStatus = strtolower(trim((string) ($workOrderWebfleetStatusLabels[$rightNo] ?? webfleet_default_status_label())));
-            $webfleetCompare = strcmp($leftWebfleetStatus, $rightWebfleetStatus);
+            $webfleetCompare = strcmp($rightWebfleetStatus, $leftWebfleetStatus);
             if ($webfleetCompare !== 0) {
                 return $webfleetCompare;
             }
