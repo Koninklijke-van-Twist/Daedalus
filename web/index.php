@@ -3488,7 +3488,8 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                         class="<?= htmlspecialchars($selectedWorkOrderWebfleetBadgeClass) ?>"><?= htmlspecialchars($selectedWorkOrderWebfleetStatusLabel) ?></span><br />
                     Object:
                     <?= bc_text_html((string) ($selectedWorkOrder['Main_Entity_Description'] ?? '')) ?><br />
-                    Component: <a href="<?= get_sharepoint_url($selectedWorkOrder) ?>">
+                    Component: <a href="<?= get_sharepoint_url($selectedWorkOrder) ?>" target="_blank"
+                        rel="noopener noreferrer">
                         <?= bc_text_html((string) ($selectedWorkOrder['Component_Description'] ?? '')) ?></a><br /><br />
                     Materiaal nodig:
                     <?= htmlspecialchars(material_needed_text($selectedWorkOrderRealArticleCount)) ?><br />
