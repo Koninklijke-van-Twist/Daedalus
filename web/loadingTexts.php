@@ -1,4 +1,7 @@
 <?php
+/**
+ * Variabelen
+ */
 $texts = [
     "Olie en diesel zorgvuldig scheiden...",
     "Radiator uitluchten met professionele zucht...",
@@ -208,6 +211,9 @@ $texts = [
     "Status wijzigen naar ‘Operationeel overtuigend’..."
 ];
 
+/**
+ * Functies
+ */
 function getRandomLoadingText(): string
 {
     global $texts;

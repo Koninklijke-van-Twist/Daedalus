@@ -1,4 +1,7 @@
 <?php
+/**
+ * Variabelen
+ */
 $auth_list =
     [
         "env1" => ['mode' => 'basic', 'user' => 'USERNAME', 'pass' => 'PASSWORD'],

@@ -1,3 +1,6 @@
+/**
+ * Page load
+ */
 self.addEventListener('install', (event) =>
 {
     event.waitUntil(self.skipWaiting());

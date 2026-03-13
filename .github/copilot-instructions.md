@@ -45,3 +45,26 @@
 - Alleen benodigde kolommen opvragen via `$select` voor performance.
 - Sorteer werkorders standaard op `Start_Date` oplopend.
 - Gebruik `KVT_Extended_Text` als beschrijvingstekst in planningregels; `Description` blijft de naam.
+
+## Code-structuur en refactorregels (PHP en JS)
+- Pas bij refactors in PHP/JS altijd dezelfde sectievolgorde toe, en alleen als de sectie inhoud heeft:
+  - `Includes/requires` (of vergelijkbare naam zoals `Imports`)
+  - `Constants`
+  - `Variabelen`
+  - `Functies`
+  - `Page load` (alle top-level uitvoerbare code die niet in functies staat)
+- Gebruik voor secties een duidelijke blokcomment-stijl, bijvoorbeeld:
+  - `/**` + `* Functies` + `*/`
+- Voeg geen lege secties toe. Een ontbrekende sectie betekent: niet opnemen.
+- Functioneel gedrag mag niet wijzigen door de refactor:
+  - geen wijziging in logica, filters, output, routes, sessiegedrag of side-effects
+  - alleen herordenen/annoteren en waar nodig veilig opsplitsen zonder gedragswijziging
+- Houd top-level uitvoerbare code geconcentreerd in de `Page load`-sectie.
+- Classes moeten altijd in een eigen bestand staan:
+  - maximaal 1 class per bestand
+  - bestandsnaam sluit aan op classnaam
+  - geen class-definities tussen page-load code in gecombineerde scriptbestanden
+- Respecteer altijd bestaande uitzonderingen uit deze instructies:
+  - `web/logincheck.php` niet aanpassen
+  - `web/odata.php` niet aanpassen
+  - `web/auth.php` alleen aanpassen na expliciete gebruikersvraag

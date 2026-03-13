@@ -1,4 +1,7 @@
 <?php
+/**
+ * Functies
+ */
 function odata_company_url(string $environment, string $company, string $entity, array $params = []): string
 {
     global $baseUrl;
