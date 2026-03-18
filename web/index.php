@@ -617,6 +617,11 @@ function resolve_selected_resource_name(string $selectedResourceNo, array $servi
     return '';
 }
 
+function is_all_resources_selection(string $resourceNo): bool
+{
+    return trim($resourceNo) === '__all__';
+}
+
 function merged_status_catalog(array $statusCatalog, array $availableStatuses): array
 {
     $catalogMap = [];
@@ -1738,6 +1743,8 @@ function fetch_app_workorders_chunked(
         return [];
     }
 
+    $isAllResources = is_all_resources_selection($resourceNo);
+
     $chunks = build_week_chunks($rangeStart, $rangeEnd);
     if (empty($chunks)) {
         return [];
@@ -1749,9 +1756,14 @@ function fetch_app_workorders_chunked(
         $start = $chunk['start']->format('Y-m-d');
         $end = $chunk['end']->format('Y-m-d');
 
-        $filter = "Resource_No eq '" . odata_quote_string($resourceNo) . "'"
-            . " and Start_Date ge " . $start
-            . " and Start_Date le " . $end;
+        $filterParts = [
+            "Start_Date ge " . $start,
+            "Start_Date le " . $end,
+        ];
+        if (!$isAllResources) {
+            $filterParts[] = "Resource_No eq '" . odata_quote_string($resourceNo) . "'";
+        }
+        $filter = implode(' and ', $filterParts);
 
         $url = odata_company_url($environment, $company, 'AppWerkorders', [
             '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
@@ -1906,6 +1918,8 @@ if ($userEmail !== '') {
 $selectedResourceNo = '';
 $selectedResourceName = '';
 $ownResourceNo = '';
+$allResourcesOptionValue = '__all__';
+$allResourcesOptionLabel = 'Iedereen';
 
 if ($ajaxAction === 'resource_counts') {
     $resourceNosInput = $_GET['resource_nos'] ?? [];
@@ -1977,7 +1991,9 @@ try {
         }
     }
 
-    if ($selectedPersonNoRequest !== '' && isset($serviceResourceMap[$selectedPersonNoRequest])) {
+    if ($selectedPersonNoRequest !== '' && $selectedPersonNoRequest === $allResourcesOptionValue) {
+        $selectedResourceNo = $allResourcesOptionValue;
+    } elseif ($selectedPersonNoRequest !== '' && isset($serviceResourceMap[$selectedPersonNoRequest])) {
         $selectedResourceNo = $selectedPersonNoRequest;
     } elseif ($ownResourceNo !== '' && isset($serviceResourceMap[$ownResourceNo])) {
         $selectedResourceNo = $ownResourceNo;
@@ -1987,7 +2003,9 @@ try {
         $selectedResourceNo = (string) ($serviceResources[0]['No'] ?? '');
     }
 
-    $selectedResourceName = resolve_selected_resource_name($selectedResourceNo, $serviceResourceMap, $resourcesForUser);
+    $selectedResourceName = is_all_resources_selection($selectedResourceNo)
+        ? $allResourcesOptionLabel
+        : resolve_selected_resource_name($selectedResourceNo, $serviceResourceMap, $resourcesForUser);
 
     if ($selectedResourceNo !== '') {
         $workOrders = fetch_app_workorders_chunked(
@@ -3328,10 +3346,16 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                 <label for="person">Servicemonteur</label>
                 <select id="person" name="person" onchange="this.form.submit()"
                     data-counts-url="<?= htmlspecialchars($resourceCountsUrl) ?>"
-                    data-own-resource="<?= htmlspecialchars($ownResourceNo) ?>">
+                    data-own-resource="<?= htmlspecialchars($ownResourceNo) ?>"
+                    data-all-resource="<?= htmlspecialchars($allResourcesOptionValue) ?>">
                     <?php if (count($serviceResources) === 0): ?>
                         <option value="">Gegevens van servicemonteurs worden opgehaald...</option>
                     <?php else: ?>
+                        <option value="<?= htmlspecialchars($allResourcesOptionValue) ?>"
+                            data-name="<?= htmlspecialchars($allResourcesOptionLabel) ?>"
+                            <?= $selectedResourceNo === $allResourcesOptionValue ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($allResourcesOptionLabel) ?>
+                        </option>
                         <?php foreach ($serviceResources as $serviceResource): ?>
                             <?php $resourceNo = trim((string) ($serviceResource['No'] ?? '')); ?>
                             <?php $baseName = safe_text((string) ($serviceResource['Name'] ?? '')); ?>
@@ -3683,6 +3707,10 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                                 <?php if ($workOrderTimeRangeText !== ''): ?>
                                     · <?= htmlspecialchars($workOrderTimeRangeText) ?>
                                 <?php endif; ?><br />
+                                <?php if (is_all_resources_selection($selectedResourceNo)): ?>
+                                    <b>Monteur</b>:
+                                    <?= bc_text_html((string) ($workOrder['Resource_Name'] ?? '-')) ?><br />
+                                <?php endif; ?>
                                 <b>Object</b>:
                                 <?= bc_text_html((string) ($workOrder['Main_Entity_Description'] ?? '')) ?><br />
                                 <b>Component</b>:
@@ -4281,9 +4309,11 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             {
                 const countsUrl = (personSelectEl.getAttribute('data-counts-url') || '').trim();
                 const ownResourceNo = (personSelectEl.getAttribute('data-own-resource') || '').trim();
+                const allResourcesValue = (personSelectEl.getAttribute('data-all-resource') || '').trim();
                 const personOptions = Array.from(personSelectEl.options || []).filter(function (optionEl)
                 {
-                    return (optionEl.value || '').trim() !== '';
+                    const optionValue = (optionEl.value || '').trim();
+                    return optionValue !== '' && optionValue !== allResourcesValue;
                 });
 
                 if (countsUrl !== '' && personOptions.length > 0)
