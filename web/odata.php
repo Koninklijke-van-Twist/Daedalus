@@ -414,9 +414,6 @@ function odata_send_cache_status_json(): void
         xdebug_disable();
     }
 
-    require_once __DIR__ . '/auth.php';
-    require_once __DIR__ . '/logincheck.php';
-
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
@@ -430,9 +427,6 @@ function odata_send_cache_delete_json(): void
     if (function_exists('xdebug_disable')) {
         xdebug_disable();
     }
-
-    require_once __DIR__ . '/auth.php';
-    require_once __DIR__ . '/logincheck.php';
 
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
@@ -468,9 +462,6 @@ function odata_send_cache_clear_json(): void
     if (function_exists('xdebug_disable')) {
         xdebug_disable();
     }
-
-    require_once __DIR__ . '/auth.php';
-    require_once __DIR__ . '/logincheck.php';
 
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
