@@ -765,7 +765,6 @@ function is_task_article_line(array $line): bool
         'Task_Article',
         'KVT_Task_Article',
         'KVT_Taakartikel',
-        'KVT_Exclude_Calc_Workorder',
     ];
 
     foreach ($taskArticleFields as $field) {
@@ -1029,7 +1028,7 @@ function fetch_workorder_material_summary_for_workorders(
         }
 
         $url = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
-            '$select' => 'LVS_Work_Order_No,Type,No,KVT_Status_Material,KVT_Exclude_Calc_Workorder',
+            '$select' => 'LVS_Work_Order_No,Type,No,KVT_Status_Material',
             '$filter' => $filter,
         ]);
 
@@ -2302,7 +2301,7 @@ try {
             }
 
             $linesUrl = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
-                '$select' => 'Line_No,Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Completely_Picked,KVT_Qty_Picked,KVT_Expected_Receipt_Date,LVS_Purchase_Order_No,LVS_Outstanding_Qty_Base,Planning_Date,LVS_Vendor_Name,LVS_Supply_from,KVT_Exclude_Calc_Workorder',
+                '$select' => 'Line_No,Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Completely_Picked,KVT_Qty_Picked,KVT_Expected_Receipt_Date,LVS_Purchase_Order_No,LVS_Outstanding_Qty_Base,Planning_Date,LVS_Vendor_Name,LVS_Supply_from',
                 '$filter' => "LVS_Work_Order_No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
                 '$orderby' => 'Line_No asc',
             ]);
