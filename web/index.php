@@ -82,6 +82,7 @@ $dateToRequest = trim((string) ($_GET['date_to'] ?? ''));
 $ajaxAction = trim((string) ($_GET['ajax'] ?? ''));
 $emailNotificationsSubmitRequest = trim((string) ($_GET['email_notifications_submit'] ?? $_POST['email_notifications_submit'] ?? ''));
 $emailNotificationsEnabledRequest = trim((string) ($_GET['email_notifications_enabled'] ?? $_POST['email_notifications_enabled'] ?? ''));
+$emailDailyOverviewEnabledRequest = trim((string) ($_GET['email_daily_overview_enabled'] ?? $_POST['email_daily_overview_enabled'] ?? ''));
 $hasStatusFiltersRequest = array_key_exists('status_filters', $_GET);
 $hasWebfleetStatusFiltersRequest = array_key_exists('webfleet_status_filters', $_GET);
 
@@ -254,6 +255,8 @@ function default_notification_settings(): array
 {
     return [
         'enabled' => false,
+        'daily_overview_enabled' => false,
+        'daily_overview_last_sent_date' => '',
         'last_checked_at' => '',
         'resource_no' => '',
         'resource_name' => '',
@@ -267,6 +270,8 @@ function normalize_notification_settings(array $input): array
 
     return [
         'enabled' => is_true_value($input['enabled'] ?? $defaults['enabled']),
+        'daily_overview_enabled' => is_true_value($input['daily_overview_enabled'] ?? $defaults['daily_overview_enabled']),
+        'daily_overview_last_sent_date' => trim((string) ($input['daily_overview_last_sent_date'] ?? $defaults['daily_overview_last_sent_date'])),
         'last_checked_at' => trim((string) ($input['last_checked_at'] ?? $defaults['last_checked_at'])),
         'resource_no' => trim((string) ($input['resource_no'] ?? $defaults['resource_no'])),
         'resource_name' => trim((string) ($input['resource_name'] ?? $defaults['resource_name'])),
@@ -1411,6 +1416,106 @@ function format_workorder_time_value(string $value): string
     return '';
 }
 
+function parse_iso_datetime_or_null(string $value): ?DateTimeImmutable
+{
+    $raw = trim($value);
+    if ($raw === '') {
+        return null;
+    }
+
+    try {
+        return new DateTimeImmutable($raw);
+    } catch (Throwable $throwable) {
+        return null;
+    }
+}
+
+function workorder_datetime_from_row(array $row): ?DateTimeImmutable
+{
+    $dateRaw = trim((string) ($row['Start_Date'] ?? ''));
+    if ($dateRaw === '') {
+        return null;
+    }
+
+    $datePart = substr($dateRaw, 0, 10);
+    if ($datePart === '' || preg_match('/^\d{4}-\d{2}-\d{2}$/', $datePart) !== 1) {
+        return null;
+    }
+
+    $timePart = format_workorder_time_value((string) ($row['Start_Time'] ?? ''));
+    if ($timePart === '' || preg_match('/^\d{2}:\d{2}$/', $timePart) !== 1) {
+        $timePart = '00:00';
+    }
+
+    $dateTime = DateTimeImmutable::createFromFormat('Y-m-d H:i', $datePart . ' ' . $timePart, new DateTimeZone('UTC'));
+    if (!($dateTime instanceof DateTimeImmutable)) {
+        return null;
+    }
+
+    return $dateTime;
+}
+
+function latest_workorder_datetime(array $workOrders): ?DateTimeImmutable
+{
+    $latest = null;
+
+    foreach ($workOrders as $workOrder) {
+        $candidate = workorder_datetime_from_row($workOrder);
+        if (!($candidate instanceof DateTimeImmutable)) {
+            continue;
+        }
+
+        if (!($latest instanceof DateTimeImmutable) || $candidate > $latest) {
+            $latest = $candidate;
+        }
+    }
+
+    return $latest;
+}
+
+function fetch_latest_workorder_datetime_for_resource(
+    string $environment,
+    string $company,
+    string $resourceNo,
+    array $auth
+): ?DateTimeImmutable {
+    $normalizedResourceNo = trim($resourceNo);
+    if ($normalizedResourceNo === '' || is_all_resources_selection($normalizedResourceNo)) {
+        return null;
+    }
+
+    $url = odata_company_url($environment, $company, 'AppWerkorders', [
+        '$select' => 'Start_Date,Start_Time',
+        '$filter' => "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "'",
+        '$orderby' => 'Start_Date desc,Start_Time desc,No desc',
+        '$top' => 1,
+    ]);
+
+    $rows = odata_get_all($url, $auth, odata_ttl('workorders_list'));
+    $firstRow = $rows[0] ?? null;
+    if (!is_array($firstRow)) {
+        return null;
+    }
+
+    return workorder_datetime_from_row($firstRow);
+}
+
+function notification_settings_with_forward_last_checked(array $settings, ?DateTimeImmutable $candidate): array
+{
+    $normalized = normalize_notification_settings($settings);
+    if (!($candidate instanceof DateTimeImmutable)) {
+        return $normalized;
+    }
+
+    $existing = parse_iso_datetime_or_null((string) ($normalized['last_checked_at'] ?? ''));
+    if ($existing instanceof DateTimeImmutable && $candidate <= $existing) {
+        return $normalized;
+    }
+
+    $normalized['last_checked_at'] = $candidate->format('c');
+    return $normalized;
+}
+
 function normalize_status_filter_map(array $input): array
 {
     $result = [];
@@ -2097,7 +2202,6 @@ try {
         ? $allResourcesOptionLabel
         : resolve_selected_resource_name($selectedResourceNo, $serviceResourceMap, $resourcesForUser);
 
-    $currentUtcIsoDateTime = gmdate('c');
     if ($notificationEmailVisible) {
         $notificationSettings['resource_no'] = $notificationResourceNo;
         if ($notificationResourceName !== '') {
@@ -2108,19 +2212,22 @@ try {
         if ($emailNotificationsSubmitRequest === '1') {
             $wasEnabled = !empty($notificationSettings['enabled']);
             $isEnabled = $emailNotificationsEnabledRequest === '1';
+            $isDailyOverviewEnabled = $emailDailyOverviewEnabledRequest === '1';
             $notificationSettings['enabled'] = $isEnabled;
+            $notificationSettings['daily_overview_enabled'] = $isDailyOverviewEnabled;
 
             if ($isEnabled && !$wasEnabled) {
-                $notificationSettings['last_checked_at'] = $currentUtcIsoDateTime;
+                $latestForResource = fetch_latest_workorder_datetime_for_resource(
+                    $environment,
+                    $company,
+                    $notificationResourceNo,
+                    $auth
+                );
+                $notificationSettings = notification_settings_with_forward_last_checked($notificationSettings, $latestForResource);
             }
 
             $notificationSettings = save_user_notification_settings($userEmail, $notificationSettings, $statusFilterMetadata);
             $notificationSaveNotice = 'Meldingsinstelling opgeslagen.';
-        }
-
-        if ($selectedResourceNo !== '' && $selectedResourceNo === $notificationResourceNo) {
-            $notificationSettings['last_checked_at'] = $currentUtcIsoDateTime;
-            $notificationSettings = save_user_notification_settings($userEmail, $notificationSettings, $statusFilterMetadata);
         }
     }
 
@@ -2355,6 +2462,24 @@ try {
         $workOrderMaterialStatusLabels = is_array($workOrderMaterialSummary['labels'] ?? null)
             ? $workOrderMaterialSummary['labels']
             : [];
+
+        if (
+            $notificationEmailVisible
+            && $selectedWorkOrderNo === ''
+            && $selectedResourceNo !== ''
+            && $selectedResourceNo === $notificationResourceNo
+        ) {
+            $beforeLastChecked = (string) ($notificationSettings['last_checked_at'] ?? '');
+            $latestVisibleWorkorderDateTime = latest_workorder_datetime($workOrders);
+            $notificationSettings = notification_settings_with_forward_last_checked(
+                $notificationSettings,
+                $latestVisibleWorkorderDateTime
+            );
+
+            if ((string) ($notificationSettings['last_checked_at'] ?? '') !== $beforeLastChecked) {
+                $notificationSettings = save_user_notification_settings($userEmail, $notificationSettings, $statusFilterMetadata);
+            }
+        }
     }
 
     if ($selectedWorkOrderNo !== '') {
@@ -3646,6 +3771,8 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                 <input id="email_notifications_submit" name="email_notifications_submit" type="hidden" value="0" />
                 <input id="email_notifications_enabled" name="email_notifications_enabled" type="hidden"
                     value="<?= !empty($notificationSettings['enabled']) ? '1' : '0' ?>" />
+                <input id="email_daily_overview_enabled" name="email_daily_overview_enabled" type="hidden"
+                    value="<?= !empty($notificationSettings['daily_overview_enabled']) ? '1' : '0' ?>" />
                 <button id="apply-filters-button" type="submit">Toepassen</button>
             </div>
         </form>
@@ -3720,6 +3847,11 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                         <input id="email-notification-checkbox" type="checkbox" <?= !empty($notificationSettings['enabled']) ? 'checked' : '' ?> />
                         <span>Meldingen inschakelen voor
                             <?= htmlspecialchars($notificationResourceName !== '' ? $notificationResourceName : $userEmail) ?></span>
+                    </label>
+                    <label class="email-modal-toggle">
+                        <input id="email-daily-overview-checkbox" type="checkbox"
+                            <?= !empty($notificationSettings['daily_overview_enabled']) ? 'checked' : '' ?> />
+                        <span>Toon dagelijks overzicht</span>
                     </label>
                     <?php if (trim((string) ($notificationSettings['last_checked_at'] ?? '')) !== ''): ?>
                         <p class="email-modal-note">Laatst gezocht:
@@ -4376,7 +4508,9 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             const webfleetStatusFiltersInputEl = document.getElementById('webfleet_status_filters');
             const emailNotificationsSubmitInputEl = document.getElementById('email_notifications_submit');
             const emailNotificationsEnabledInputEl = document.getElementById('email_notifications_enabled');
+            const emailDailyOverviewEnabledInputEl = document.getElementById('email_daily_overview_enabled');
             const emailNotificationCheckboxEl = document.getElementById('email-notification-checkbox');
+            const emailDailyOverviewCheckboxEl = document.getElementById('email-daily-overview-checkbox');
             const statusFilterCheckboxEls = Array.from(document.querySelectorAll('.status-filter-checkbox'));
             const webfleetFilterCheckboxEls = Array.from(document.querySelectorAll('.webfleet-filter-checkbox'));
             const statusCloseEls = Array.from(document.querySelectorAll('[data-status-close]'));
@@ -4614,6 +4748,11 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                     if (emailNotificationsEnabledInputEl)
                     {
                         emailNotificationsEnabledInputEl.value = emailNotificationCheckboxEl && emailNotificationCheckboxEl.checked ? '1' : '0';
+                    }
+
+                    if (emailDailyOverviewEnabledInputEl)
+                    {
+                        emailDailyOverviewEnabledInputEl.value = emailDailyOverviewCheckboxEl && emailDailyOverviewCheckboxEl.checked ? '1' : '0';
                     }
 
                     if (emailNotificationsSubmitInputEl)

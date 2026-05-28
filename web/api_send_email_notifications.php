@@ -43,6 +43,12 @@ $summary = [
     'timestamp_utc' => gmdate('c'),
     'processed' => 0,
     'skipped' => 0,
+    'emails_sent_total' => 0,
+    'orders_sent_total' => 0,
+    'new_workorder_emails_sent' => 0,
+    'new_workorder_orders_sent' => 0,
+    'daily_overview_emails_sent' => 0,
+    'daily_overview_orders_sent' => 0,
     'emails_sent' => 0,
     'orders_sent' => 0,
     'errors' => [],
@@ -95,6 +101,8 @@ function default_notification_settings(): array
 {
     return [
         'enabled' => false,
+        'daily_overview_enabled' => false,
+        'daily_overview_last_sent_date' => '',
         'last_checked_at' => '',
         'resource_no' => '',
         'resource_name' => '',
@@ -108,6 +116,8 @@ function normalize_notification_settings(array $input): array
 
     return [
         'enabled' => is_true_value($input['enabled'] ?? $defaults['enabled']),
+        'daily_overview_enabled' => is_true_value($input['daily_overview_enabled'] ?? $defaults['daily_overview_enabled']),
+        'daily_overview_last_sent_date' => trim((string) ($input['daily_overview_last_sent_date'] ?? $defaults['daily_overview_last_sent_date'])),
         'last_checked_at' => trim((string) ($input['last_checked_at'] ?? $defaults['last_checked_at'])),
         'resource_no' => trim((string) ($input['resource_no'] ?? $defaults['resource_no'])),
         'resource_name' => trim((string) ($input['resource_name'] ?? $defaults['resource_name'])),
@@ -217,6 +227,87 @@ function format_workorder_time_value(string $value): string
     }
 
     return '';
+}
+
+function parse_iso_datetime_or_null(string $value): ?DateTimeImmutable
+{
+    $raw = trim($value);
+    if ($raw === '') {
+        return null;
+    }
+
+    try {
+        return new DateTimeImmutable($raw);
+    } catch (Throwable $throwable) {
+        return null;
+    }
+}
+
+function workorder_datetime_from_row(array $workOrder): ?DateTimeImmutable
+{
+    $startDateRaw = trim((string) ($workOrder['Start_Date'] ?? ''));
+    if ($startDateRaw === '') {
+        return null;
+    }
+
+    $datePart = $startDateRaw;
+    if (preg_match('/^(\d{4}-\d{2}-\d{2})/', $startDateRaw, $matches) === 1) {
+        $datePart = (string) ($matches[1] ?? $startDateRaw);
+    }
+
+    $startTimeRaw = trim((string) ($workOrder['Start_Time'] ?? ''));
+    $timePart = '00:00:00';
+    if ($startTimeRaw !== '') {
+        if (preg_match('/^(\d{2}:\d{2}:\d{2})/', $startTimeRaw, $matches) === 1) {
+            $timePart = (string) ($matches[1] ?? '00:00:00');
+        } elseif (preg_match('/^(\d{2}:\d{2})/', $startTimeRaw, $matches) === 1) {
+            $timePart = (string) ($matches[1] ?? '00:00') . ':00';
+        }
+    }
+
+    try {
+        return new DateTimeImmutable($datePart . ' ' . $timePart, new DateTimeZone('UTC'));
+    } catch (Throwable $throwable) {
+        return null;
+    }
+}
+
+function latest_workorder_datetime_iso(array $workOrders): string
+{
+    $latest = null;
+
+    foreach ($workOrders as $workOrder) {
+        if (!is_array($workOrder)) {
+            continue;
+        }
+
+        $candidate = workorder_datetime_from_row($workOrder);
+        if ($candidate === null) {
+            continue;
+        }
+
+        if ($latest === null || $candidate > $latest) {
+            $latest = $candidate;
+        }
+    }
+
+    return $latest instanceof DateTimeImmutable ? $latest->format('c') : '';
+}
+
+function notification_settings_with_forward_last_checked(array $settings, string $candidateIso): array
+{
+    $candidate = parse_iso_datetime_or_null($candidateIso);
+    if ($candidate === null) {
+        return $settings;
+    }
+
+    $current = parse_iso_datetime_or_null((string) ($settings['last_checked_at'] ?? ''));
+    if ($current !== null && $candidate <= $current) {
+        return $settings;
+    }
+
+    $settings['last_checked_at'] = $candidate->format('c');
+    return $settings;
 }
 
 function status_css_class(string $status): string
@@ -769,6 +860,33 @@ function fetch_workorders_for_resource_by_date(
     return odata_get_all($url, $auth, odata_ttl('workorders_list'));
 }
 
+function fetch_workorders_for_resource_on_day(
+    string $environment,
+    string $company,
+    string $resourceNo,
+    string $day,
+    array $auth
+): array {
+    $normalizedResourceNo = trim($resourceNo);
+    if ($normalizedResourceNo === '') {
+        return [];
+    }
+
+    $normalizedDay = trim($day);
+    if ($normalizedDay === '') {
+        return [];
+    }
+
+    $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and Start_Date ge " . $normalizedDay . ' and Start_Date le ' . $normalizedDay;
+    $url = odata_company_url($environment, $company, 'AppWerkorders', [
+        '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
+        '$filter' => $filter,
+        '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
+    ]);
+
+    return odata_get_all($url, $auth, odata_ttl('workorders_list'));
+}
+
 function workorder_link(string $company, string $resourceNo, string $workOrderNo): string
 {
     return APP_BASE_URL . '?' . http_build_query([
@@ -783,6 +901,69 @@ function nl_date_safe(?string $value): string
     return nl_date($value);
 }
 
+function workorder_day_key(string $value): string
+{
+    $raw = trim($value);
+    if ($raw === '') {
+        return '';
+    }
+
+    return substr($raw, 0, 10);
+}
+
+function workorder_day_separator_label(string $value): string
+{
+    $dayKey = workorder_day_key($value);
+    if ($dayKey === '') {
+        return 'Onbekende datum';
+    }
+
+    $date = DateTimeImmutable::createFromFormat('Y-m-d', $dayKey);
+    if (!($date instanceof DateTimeImmutable) || $date->format('Y-m-d') !== $dayKey) {
+        return nl_date($dayKey);
+    }
+
+    $weekdays = [
+        1 => 'maandag',
+        2 => 'dinsdag',
+        3 => 'woensdag',
+        4 => 'donderdag',
+        5 => 'vrijdag',
+        6 => 'zaterdag',
+        7 => 'zondag',
+    ];
+
+    $months = [
+        1 => 'januari',
+        2 => 'februari',
+        3 => 'maart',
+        4 => 'april',
+        5 => 'mei',
+        6 => 'juni',
+        7 => 'juli',
+        8 => 'augustus',
+        9 => 'september',
+        10 => 'oktober',
+        11 => 'november',
+        12 => 'december',
+    ];
+
+    $weekdayIndex = (int) $date->format('N');
+    $weekday = (string) ($weekdays[$weekdayIndex] ?? '');
+    $dayOfMonth = (int) $date->format('j');
+    $monthIndex = (int) $date->format('n');
+    $month = (string) ($months[$monthIndex] ?? '');
+    $year = $date->format('Y');
+    $formattedDate = $month !== ''
+        ? ($dayOfMonth . ' ' . $month . ' ' . $year)
+        : nl_date($dayKey);
+    if ($weekday === '') {
+        return $formattedDate;
+    }
+
+    return trim($weekday . ' ' . $formattedDate);
+}
+
 function safe_text_html(string $value, string $fallback = '-'): string
 {
     $trimmed = trim($value);
@@ -793,9 +974,62 @@ function safe_text_html(string $value, string $fallback = '-'): string
     return htmlspecialchars($trimmed, ENT_QUOTES, 'UTF-8');
 }
 
+function subject_count_text(int $count): string
+{
+    $normalizedCount = max(0, $count);
+    $words = [
+        1 => 'een',
+        2 => 'twee',
+        3 => 'drie',
+        4 => 'vier',
+        5 => 'vijf',
+        6 => 'zes',
+        7 => 'zeven',
+        8 => 'acht',
+        9 => 'negen',
+        10 => 'tien',
+        11 => 'elf',
+        12 => 'twaalf',
+    ];
+
+    if (isset($words[$normalizedCount])) {
+        return $words[$normalizedCount];
+    }
+
+    return (string) $normalizedCount;
+}
+
+function notification_subject(string $subjectPrefix, int $newWorkOrderCount): string
+{
+    return trim($subjectPrefix) . ' - ' . subject_count_text($newWorkOrderCount) . ' nieuwe werkorders ontvangen';
+}
+
+function daily_overview_subject(string $subjectPrefix, string $day): string
+{
+    return trim($subjectPrefix) . ' - dagelijks overzicht ' . trim($day);
+}
+
 function build_email_html(string $company, string $resourceNo, string $resourceName, array $workOrders, array $materialCounts, array $materialLabels, array $webfleetLabels): string
 {
     $cardsHtml = '';
+    $previousWorkOrderDayKey = '';
+
+    $badgeBaseStyle = 'display:inline-block;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:600;white-space:nowrap;border:1px solid transparent;line-height:1.25;';
+    $badgeStyles = [
+        'ok' => $badgeBaseStyle . 'color:#1d8a4c;border-color:#bce4cb;background:#eef9f2;',
+        'warn' => $badgeBaseStyle . 'color:#ad6f1a;border-color:#ead8b7;background:#fbf5ea;',
+        'neutral' => $badgeBaseStyle . 'color:#637588;border-color:#d7e0e8;background:#f7f9fb;',
+        'unknown' => $badgeBaseStyle . 'color:#8e2a2a;border-color:#f2cdcd;background:#fff3f3;',
+        'status-open' => $badgeBaseStyle . 'color:#152233;border-color:#cfd8e2;background:#d1d1d1;',
+        'status-getekend' => $badgeBaseStyle . 'color:#152233;border-color:#cfd8e2;background:#f6f9e9;',
+        'status-uitgevoerd' => $badgeBaseStyle . 'color:#152233;border-color:#cfd8e2;background:#efd4ff;',
+        'status-gecontroleerd' => $badgeBaseStyle . 'color:#152233;border-color:#cfd8e2;background:#fff8cf;',
+        'status-geannuleerd' => $badgeBaseStyle . 'color:#152233;border-color:#cfd8e2;background:#ffa7a7;',
+        'status-afgesloten' => $badgeBaseStyle . 'color:#152233;border-color:#cfd8e2;background:#948d8d;',
+        'status-gepland' => $badgeBaseStyle . 'color:#152233;border-color:#cfd8e2;background:#d4ffda;',
+        'status-onderhanden' => $badgeBaseStyle . 'color:#152233;border-color:#cfd8e2;background:#ffeedd;',
+        'status-gefactureerd' => $badgeBaseStyle . 'color:#152233;border-color:#cfd8e2;background:#8ec9ba;',
+    ];
 
     foreach ($workOrders as $workOrder) {
         $workOrderNo = trim((string) ($workOrder['No'] ?? ''));
@@ -803,23 +1037,43 @@ function build_email_html(string $company, string $resourceNo, string $resourceN
             continue;
         }
 
+        $workOrderStartDateRaw = (string) ($workOrder['Start_Date'] ?? '');
+        $workOrderDayKey = workorder_day_key($workOrderStartDateRaw);
+        if ($workOrderDayKey === '') {
+            $workOrderDayKey = '__onbekend__';
+        }
+        $showDaySeparator = $workOrderDayKey !== $previousWorkOrderDayKey;
+        if ($showDaySeparator) {
+            $previousWorkOrderDayKey = $workOrderDayKey;
+            $separatorText = safe_text_html(workorder_day_separator_label($workOrderStartDateRaw), 'Onbekende datum');
+            $cardsHtml .= '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;margin:2px 0;">';
+            $cardsHtml .= '<tr>';
+            $cardsHtml .= '<td style="border-top:1px solid #dbe4ee;font-size:1px;line-height:1px;">&nbsp;</td>';
+            $cardsHtml .= '<td style="white-space:nowrap;padding:0 10px;color:#5f7287;font-size:13px;font-weight:600;line-height:1.3;">' . $separatorText . '</td>';
+            $cardsHtml .= '<td style="border-top:1px solid #dbe4ee;font-size:1px;line-height:1px;">&nbsp;</td>';
+            $cardsHtml .= '</tr>';
+            $cardsHtml .= '</table>';
+        }
+
         $href = workorder_link($company, $resourceNo, $workOrderNo);
         $workOrderStatusText = trim((string) ($workOrder['Status'] ?? ''));
         $workOrderStatusClass = status_css_class($workOrderStatusText);
-        $workOrderBadgeClass = $workOrderStatusClass !== '' ? ('badge ' . $workOrderStatusClass) : 'badge neutral';
+        $workOrderBadgeStyle = $badgeStyles[$workOrderStatusClass] ?? $badgeStyles['neutral'];
 
         $webfleetStatusLabel = trim((string) ($webfleetLabels[$workOrderNo] ?? webfleet_default_status_label()));
         if ($webfleetStatusLabel === '') {
             $webfleetStatusLabel = webfleet_default_status_label();
         }
-        $webfleetBadgeClass = 'badge ' . webfleet_status_badge_class($webfleetStatusLabel);
+        $webfleetClass = webfleet_status_badge_class($webfleetStatusLabel);
+        $webfleetBadgeStyle = $badgeStyles[$webfleetClass] ?? $badgeStyles['status-gepland'];
 
         $realArticleCount = (int) ($materialCounts[$workOrderNo] ?? 0);
         $materialStatusLabel = trim((string) ($materialLabels[$workOrderNo] ?? 'Onbekend'));
         if ($materialStatusLabel === '') {
             $materialStatusLabel = 'Onbekend';
         }
-        $materialBadgeClass = 'badge ' . workorder_material_badge_class($materialStatusLabel);
+        $materialClass = workorder_material_badge_class($materialStatusLabel);
+        $materialBadgeStyle = $badgeStyles[$materialClass] ?? $badgeStyles['unknown'];
 
         $startTime = format_workorder_time_value((string) ($workOrder['Start_Time'] ?? ''));
         $endTime = format_workorder_time_value((string) ($workOrder['End_Time'] ?? ''));
@@ -832,58 +1086,55 @@ function build_email_html(string $company, string $resourceNo, string $resourceN
             $timeRangeText = $endTime;
         }
 
-        $cardsHtml .= '<a class="card" href="' . htmlspecialchars($href, ENT_QUOTES, 'UTF-8') . '">';
-        $cardsHtml .= '<div class="row"><div>';
-        $cardsHtml .= '<p class="wo-no">' . safe_text_html($workOrderNo) . '</p>';
-        $cardsHtml .= '<h2 class="wo-task">' . safe_text_html(workorder_task_text($workOrder)) . '</h2>';
-        $cardsHtml .= '</div><div class="badge-stack">';
-        $cardsHtml .= '<span class="' . htmlspecialchars($webfleetBadgeClass, ENT_QUOTES, 'UTF-8') . '">' . safe_text_html($webfleetStatusLabel) . '</span>';
-        $cardsHtml .= '<span class="' . htmlspecialchars($workOrderBadgeClass, ENT_QUOTES, 'UTF-8') . '">' . safe_text_html($workOrderStatusText) . '</span>';
-        $cardsHtml .= '</div></div>';
-        $cardsHtml .= '<div class="meta">';
+        $cardsHtml .= '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:separate;border-spacing:0;background:#ffffff;border:1px solid #dbe4ee;border-radius:12px;margin:0 0 10px 0;">';
+        $cardsHtml .= '<tr>';
+        $cardsHtml .= '<td style="padding:12px;">';
+
+        $cardsHtml .= '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">';
+        $cardsHtml .= '<tr>';
+        $cardsHtml .= '<td style="vertical-align:top;padding:0 8px 0 0;">';
+        $cardsHtml .= '<p style="margin:0 0 2px 0;font-size:15px;font-weight:700;color:#152233;line-height:1.3;">' . safe_text_html($workOrderNo) . '</p>';
+        $cardsHtml .= '<p style="margin:0;font-size:16px;line-height:1.35;color:#152233;">' . safe_text_html(workorder_task_text($workOrder)) . '</p>';
+        $cardsHtml .= '</td>';
+        $cardsHtml .= '<td style="vertical-align:top;text-align:right;white-space:nowrap;">';
+        $cardsHtml .= '<div style="margin:0 0 6px 0;"><span style="' . htmlspecialchars($webfleetBadgeStyle, ENT_QUOTES, 'UTF-8') . '">' . safe_text_html($webfleetStatusLabel) . '</span></div>';
+        $cardsHtml .= '<div><span style="' . htmlspecialchars($workOrderBadgeStyle, ENT_QUOTES, 'UTF-8') . '">' . safe_text_html($workOrderStatusText) . '</span></div>';
+        $cardsHtml .= '</td>';
+        $cardsHtml .= '</tr>';
+        $cardsHtml .= '</table>';
+
+        $cardsHtml .= '<div style="margin-top:6px;font-size:14px;color:#5f7287;line-height:1.35;">';
         $cardsHtml .= '<b>Uitvoerdatum</b>: ' . safe_text_html(nl_date_safe((string) ($workOrder['Start_Date'] ?? '')));
         if ($timeRangeText !== '') {
             $cardsHtml .= ' · ' . safe_text_html($timeRangeText);
         }
         $cardsHtml .= '<br />';
-        $cardsHtml .= '<b>Monteur</b>: ' . safe_text_html((string) ($workOrder['Resource_Name'] ?? $resourceName)) . '<br />';
         $cardsHtml .= '<b>Object</b>: ' . safe_text_html((string) ($workOrder['Main_Entity_Description'] ?? '-')) . '<br />';
         $cardsHtml .= '<b>Component</b>: ' . safe_text_html((string) ($workOrder['Component_Description'] ?? '-')) . '<br />';
         $cardsHtml .= '<b>Materiaal nodig</b>: ' . safe_text_html(material_needed_text($realArticleCount));
         if ($realArticleCount > 0) {
-            $cardsHtml .= '<br /><b>Materiaalstatus</b>: ';
-            $cardsHtml .= '<span class="' . htmlspecialchars($materialBadgeClass, ENT_QUOTES, 'UTF-8') . '">' . safe_text_html($materialStatusLabel) . '</span>';
+            $cardsHtml .= '<br /><b>Materiaalstatus</b>: <span style="' . htmlspecialchars($materialBadgeStyle, ENT_QUOTES, 'UTF-8') . '">' . safe_text_html($materialStatusLabel) . '</span>';
         }
-        $cardsHtml .= '</div></a>';
+        $cardsHtml .= '</div>';
+
+        $cardsHtml .= '<div style="margin-top:10px;"><a href="' . htmlspecialchars($href, ENT_QUOTES, 'UTF-8') . '" style="display:inline-block;color:#0f5bb7;text-decoration:none;font-size:14px;font-weight:600;">Open werkorder</a></div>';
+        $cardsHtml .= '</td>';
+        $cardsHtml .= '</tr>';
+        $cardsHtml .= '</table>';
     }
 
-    return '<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
-        . '<style>'
-        . ':root{--bg:#f2f5f9;--card:#fff;--text:#152233;--muted:#5f7287;--border:#dbe4ee}'
-        . 'body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);padding:12px}'
-        . '.page{width:min(100%,760px);margin:0 auto}'
-        . '.title{margin:0 0 10px;font-size:1.15rem}'
-        . '.subtitle{margin:0 0 12px;color:var(--muted);font-size:.9rem}'
-        . '.wo-list{display:grid;gap:10px}'
-        . '.card{display:block;text-decoration:none;color:inherit;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px}'
-        . '.row{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}'
-        . '.badge-stack{display:inline-flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}'
-        . '.wo-no{font-size:.95rem;font-weight:700;margin:0 0 2px}'
-        . '.wo-task{margin:0;font-size:1rem;line-height:1.35}'
-        . '.meta{margin-top:6px;font-size:.86rem;color:var(--muted);line-height:1.35}'
-        . '.badge{border-radius:999px;padding:3px 9px;font-size:.72rem;font-weight:600;white-space:nowrap;border:1px solid #cfd8e2;color:#152233;background:#f7f9fb}'
-        . '.badge.ok{color:#1d8a4c;border-color:#bce4cb;background:#eef9f2}'
-        . '.badge.warn{color:#ad6f1a;border-color:#ead8b7;background:#fbf5ea}'
-        . '.badge.neutral{color:#637588;border-color:#d7e0e8;background:#f7f9fb}'
-        . '.badge.unknown{color:#8e2a2a;border-color:#f2cdcd;background:#fff3f3}'
-        . '.badge.status-open{background:#d1d1d1}.badge.status-getekend{background:#f6f9e9}.badge.status-uitgevoerd{background:#efd4ff}'
-        . '.badge.status-gecontroleerd{background:#fff8cf}.badge.status-geannuleerd{background:#ffa7a7}.badge.status-afgesloten{background:#948d8d}'
-        . '.badge.status-gepland{background:#d4ffda}.badge.status-onderhanden{background:#ffeedd}.badge.status-gefactureerd{background:#8ec9ba}'
-        . '</style></head><body><main class="page">'
-        . '<h1 class="title">Nieuwe werkorders</h1>'
-        . '<p class="subtitle">Bedrijf: ' . safe_text_html($company) . ' · Monteur: ' . safe_text_html($resourceName !== '' ? $resourceName : $resourceNo) . '</p>'
-        . '<section class="wo-list">' . $cardsHtml . '</section>'
-        . '</main></body></html>';
+    return '<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>'
+        . '<body style="margin:0;padding:0;background:#f2f5f9;color:#152233;font-family:Segoe UI,Roboto,Arial,sans-serif;">'
+        . '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;background:#f2f5f9;">'
+        . '<tr><td align="center" style="padding:12px;">'
+        . '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:760px;border-collapse:collapse;">'
+        . '<tr><td style="padding:0 0 4px 0;font-size:24px;font-weight:700;line-height:1.3;color:#152233;">Nieuwe werkorders</td></tr>'
+        . '<tr><td style="padding:0 0 12px 0;font-size:14px;line-height:1.35;color:#5f7287;">Bedrijf: ' . safe_text_html($company) . ' · Monteur: ' . safe_text_html($resourceName !== '' ? $resourceName : $resourceNo) . '</td></tr>'
+        . '<tr><td>' . $cardsHtml . '</td></tr>'
+        . '</table>'
+        . '</td></tr>'
+        . '</table>'
+        . '</body></html>';
 }
 
 function smtp_read_response($socket): string
@@ -1074,6 +1325,57 @@ if (!defined('DAEDALUS_EMAIL_NOTIFICATIONS_LIB_ONLY')) {
                     continue;
                 }
 
+                $resourceName = trim((string) ($serviceResource['Name'] ?? $notificationSettings['resource_name'] ?? ''));
+                $subjectPrefix = trim((string) ($reportMail['subject_prefix'] ?? 'Daedalus'));
+                $todayUtc = gmdate('Y-m-d');
+                $dailyOverviewEnabled = !empty($notificationSettings['daily_overview_enabled']);
+                $dailyOverviewLastSentDate = trim((string) ($notificationSettings['daily_overview_last_sent_date'] ?? ''));
+
+                if ($dailyOverviewEnabled && $dailyOverviewLastSentDate !== $todayUtc) {
+                    $dailyWorkOrders = fetch_workorders_for_resource_on_day(
+                        $environment,
+                        $company,
+                        $resourceNo,
+                        $todayUtc,
+                        $auth
+                    );
+
+                    if (!empty($dailyWorkOrders)) {
+                        $dailyWorkOrderNos = array_map(static fn(array $workOrder): string => trim((string) ($workOrder['No'] ?? '')), $dailyWorkOrders);
+                        $dailyMaterialSummary = fetch_workorder_material_summary_for_workorders($environment, $company, $dailyWorkOrderNos, $auth);
+                        $dailyWebfleetLabels = fetch_webfleet_status_labels_for_workorders($environment, $company, $dailyWorkOrderNos, $auth);
+
+                        $dailyEmailHtml = build_email_html(
+                            $company,
+                            $resourceNo,
+                            $resourceName,
+                            $dailyWorkOrders,
+                            is_array($dailyMaterialSummary['counts'] ?? null) ? $dailyMaterialSummary['counts'] : [],
+                            is_array($dailyMaterialSummary['labels'] ?? null) ? $dailyMaterialSummary['labels'] : [],
+                            $dailyWebfleetLabels
+                        );
+
+                        $dailySubject = daily_overview_subject($subjectPrefix, $todayUtc);
+
+                        smtp_send_html_mail(
+                            $reportMail,
+                            $email,
+                            $resourceName,
+                            $dailySubject,
+                            $dailyEmailHtml
+                        );
+
+                        $summary['daily_overview_emails_sent']++;
+                        $summary['daily_overview_orders_sent'] += count($dailyWorkOrders);
+                        $summary['emails_sent_total']++;
+                        $summary['orders_sent_total'] += count($dailyWorkOrders);
+                        $summary['emails_sent']++;
+                        $summary['orders_sent'] += count($dailyWorkOrders);
+                    }
+
+                    $notificationSettings['daily_overview_last_sent_date'] = $todayUtc;
+                }
+
                 $newWorkOrders = fetch_new_workorders_for_resource(
                     $environment,
                     $company,
@@ -1087,7 +1389,6 @@ if (!defined('DAEDALUS_EMAIL_NOTIFICATIONS_LIB_ONLY')) {
                     $materialSummary = fetch_workorder_material_summary_for_workorders($environment, $company, $workOrderNos, $auth);
                     $webfleetLabels = fetch_webfleet_status_labels_for_workorders($environment, $company, $workOrderNos, $auth);
 
-                    $resourceName = trim((string) ($serviceResource['Name'] ?? $notificationSettings['resource_name'] ?? ''));
                     $emailHtml = build_email_html(
                         $company,
                         $resourceNo,
@@ -1098,8 +1399,7 @@ if (!defined('DAEDALUS_EMAIL_NOTIFICATIONS_LIB_ONLY')) {
                         $webfleetLabels
                     );
 
-                    $subjectPrefix = trim((string) ($reportMail['subject_prefix'] ?? 'Daedalus'));
-                    $subject = $subjectPrefix . ' - ' . count($newWorkOrders) . ' nieuwe werkorder' . (count($newWorkOrders) === 1 ? '' : 's');
+                    $subject = notification_subject($subjectPrefix, count($newWorkOrders));
 
                     smtp_send_html_mail(
                         $reportMail,
@@ -1109,11 +1409,17 @@ if (!defined('DAEDALUS_EMAIL_NOTIFICATIONS_LIB_ONLY')) {
                         $emailHtml
                     );
 
+                    $summary['new_workorder_emails_sent']++;
+                    $summary['new_workorder_orders_sent'] += count($newWorkOrders);
+                    $summary['emails_sent_total']++;
+                    $summary['orders_sent_total'] += count($newWorkOrders);
                     $summary['emails_sent']++;
                     $summary['orders_sent'] += count($newWorkOrders);
+
+                    $latestNewWorkOrderDatetime = latest_workorder_datetime_iso($newWorkOrders);
+                    $notificationSettings = notification_settings_with_forward_last_checked($notificationSettings, $latestNewWorkOrderDatetime);
                 }
 
-                $notificationSettings['last_checked_at'] = gmdate('c');
                 $payload['notification_settings'] = $notificationSettings;
                 write_user_payload($userFile, $payload);
             } catch (Throwable $throwable) {
