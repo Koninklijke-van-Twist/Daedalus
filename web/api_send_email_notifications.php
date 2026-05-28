@@ -245,6 +245,22 @@ function parse_iso_datetime_or_null(string $value): ?DateTimeImmutable
 
 function workorder_datetime_from_row(array $workOrder): ?DateTimeImmutable
 {
+    $createdDateTimeRaw = trim((string) ($workOrder['Created_Date_Time'] ?? ''));
+    if ($createdDateTimeRaw !== '') {
+        $createdDateTime = parse_iso_datetime_or_null($createdDateTimeRaw);
+        if ($createdDateTime instanceof DateTimeImmutable) {
+            return $createdDateTime;
+        }
+    }
+
+    $createdOnRaw = trim((string) ($workOrder['Created_On'] ?? ''));
+    if ($createdOnRaw !== '') {
+        try {
+            return new DateTimeImmutable($createdOnRaw . ' 00:00:00', new DateTimeZone('UTC'));
+        } catch (Throwable $throwable) {
+        }
+    }
+
     $startDateRaw = trim((string) ($workOrder['Start_Date'] ?? ''));
     if ($startDateRaw === '') {
         return null;
@@ -812,23 +828,71 @@ function fetch_new_workorders_for_resource(
     string $lastCheckedAt,
     array $auth
 ): array {
-    $dateThreshold = '1970-01-01';
-    if (trim($lastCheckedAt) !== '') {
-        try {
-            $dateThreshold = (new DateTimeImmutable($lastCheckedAt))->format('Y-m-d');
-        } catch (Throwable $throwable) {
-            $dateThreshold = '1970-01-01';
-        }
+    $lastChecked = parse_iso_datetime_or_null($lastCheckedAt);
+    $createdOnThreshold = '1970-01-01';
+    if ($lastChecked instanceof DateTimeImmutable) {
+        $createdOnThreshold = $lastChecked->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d');
     }
 
-    return fetch_workorders_for_resource_by_date(
+    $candidates = fetch_workorders_for_resource_by_created_on(
         $environment,
         $company,
         $resourceNo,
-        $dateThreshold,
-        false,
+        $createdOnThreshold,
+        true,
         $auth
     );
+
+    if ($lastChecked === null) {
+        return $candidates;
+    }
+
+    $result = [];
+    foreach ($candidates as $workOrder) {
+        if (!is_array($workOrder)) {
+            continue;
+        }
+
+        $createdAt = workorder_datetime_from_row($workOrder);
+        if (!($createdAt instanceof DateTimeImmutable)) {
+            continue;
+        }
+
+        if ($createdAt > $lastChecked) {
+            $result[] = $workOrder;
+        }
+    }
+
+    return $result;
+}
+
+function fetch_workorders_for_resource_by_created_on(
+    string $environment,
+    string $company,
+    string $resourceNo,
+    string $createdOnThreshold,
+    bool $inclusive,
+    array $auth
+): array {
+    $normalizedResourceNo = trim($resourceNo);
+    if ($normalizedResourceNo === '') {
+        return [];
+    }
+
+    $normalizedDate = trim($createdOnThreshold);
+    if ($normalizedDate === '') {
+        $normalizedDate = '1970-01-01';
+    }
+
+    $operator = $inclusive ? 'ge' : 'gt';
+    $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and Created_On " . $operator . ' ' . $normalizedDate;
+    $url = odata_company_url($environment, $company, 'AppWerkorders', [
+        '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No,Created_On,Created_At,Created_Date_Time',
+        '$filter' => $filter,
+        '$orderby' => 'Created_On asc,Created_Date_Time asc,No asc',
+    ]);
+
+    return odata_get_all($url, $auth, odata_ttl('workorders_list'));
 }
 
 function fetch_workorders_for_resource_by_date(
@@ -852,7 +916,7 @@ function fetch_workorders_for_resource_by_date(
     $operator = $inclusive ? 'ge' : 'gt';
     $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and Start_Date " . $operator . ' ' . $normalizedDate;
     $url = odata_company_url($environment, $company, 'AppWerkorders', [
-        '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
+        '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No,Created_On,Created_At,Created_Date_Time',
         '$filter' => $filter,
         '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
     ]);
@@ -879,7 +943,7 @@ function fetch_workorders_for_resource_on_day(
 
     $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and Start_Date ge " . $normalizedDay . ' and Start_Date le ' . $normalizedDay;
     $url = odata_company_url($environment, $company, 'AppWerkorders', [
-        '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
+        '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No,Created_On,Created_At,Created_Date_Time',
         '$filter' => $filter,
         '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
     ]);
