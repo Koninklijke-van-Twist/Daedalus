@@ -80,6 +80,8 @@ $webfleetStatusFiltersRequest = trim((string) ($_GET['webfleet_status_filters'] 
 $dateFromRequest = trim((string) ($_GET['date_from'] ?? ''));
 $dateToRequest = trim((string) ($_GET['date_to'] ?? ''));
 $ajaxAction = trim((string) ($_GET['ajax'] ?? ''));
+$emailNotificationsSubmitRequest = trim((string) ($_GET['email_notifications_submit'] ?? $_POST['email_notifications_submit'] ?? ''));
+$emailNotificationsEnabledRequest = trim((string) ($_GET['email_notifications_enabled'] ?? $_POST['email_notifications_enabled'] ?? ''));
 $hasStatusFiltersRequest = array_key_exists('status_filters', $_GET);
 $hasWebfleetStatusFiltersRequest = array_key_exists('webfleet_status_filters', $_GET);
 
@@ -248,6 +250,30 @@ function current_status_filter_metadata(string $email): array
     ];
 }
 
+function default_notification_settings(): array
+{
+    return [
+        'enabled' => false,
+        'last_checked_at' => '',
+        'resource_no' => '',
+        'resource_name' => '',
+        'company' => '',
+    ];
+}
+
+function normalize_notification_settings(array $input): array
+{
+    $defaults = default_notification_settings();
+
+    return [
+        'enabled' => is_true_value($input['enabled'] ?? $defaults['enabled']),
+        'last_checked_at' => trim((string) ($input['last_checked_at'] ?? $defaults['last_checked_at'])),
+        'resource_no' => trim((string) ($input['resource_no'] ?? $defaults['resource_no'])),
+        'resource_name' => trim((string) ($input['resource_name'] ?? $defaults['resource_name'])),
+        'company' => trim((string) ($input['company'] ?? $defaults['company'])),
+    ];
+}
+
 function read_user_status_filters_payload(string $path): array
 {
     $raw = read_json_assoc_file($path);
@@ -256,30 +282,78 @@ function read_user_status_filters_payload(string $path): array
     $webfleetFiltersRaw = is_array($raw['webfleet_filters'] ?? null) ? $raw['webfleet_filters'] : [];
     $webfleetFilters = normalize_webfleet_filter_map($webfleetFiltersRaw);
     $meta = is_array($raw['meta'] ?? null) ? $raw['meta'] : [];
+    $notificationSettingsRaw = is_array($raw['notification_settings'] ?? null)
+        ? $raw['notification_settings']
+        : [];
 
     return [
         'filters' => $filters,
         'webfleet_filters' => $webfleetFilters,
         'meta' => $meta,
+        'notification_settings' => normalize_notification_settings($notificationSettingsRaw),
     ];
 }
 
-function write_user_status_filters_payload(string $path, array $filters, array $meta, ?array $webfleetFilters = null): void
-{
+function write_user_status_filters_payload(
+    string $path,
+    array $filters,
+    array $meta,
+    ?array $webfleetFilters = null,
+    ?array $notificationSettings = null
+): void {
     $existingPayload = read_user_status_filters_payload($path);
     $persistedWebfleetFilters = is_array($existingPayload['webfleet_filters'] ?? null)
         ? $existingPayload['webfleet_filters']
         : [];
+    $persistedNotificationSettings = is_array($existingPayload['notification_settings'] ?? null)
+        ? normalize_notification_settings($existingPayload['notification_settings'])
+        : default_notification_settings();
 
     if (is_array($webfleetFilters)) {
         $persistedWebfleetFilters = normalize_status_filter_map($webfleetFilters);
+    }
+
+    if (is_array($notificationSettings)) {
+        $persistedNotificationSettings = normalize_notification_settings($notificationSettings);
     }
 
     write_json_assoc_file($path, [
         'filters' => normalize_status_filter_map($filters),
         'webfleet_filters' => $persistedWebfleetFilters,
         'meta' => $meta,
+        'notification_settings' => $persistedNotificationSettings,
     ]);
+}
+
+function get_user_notification_settings(string $email): array
+{
+    if ($email === '') {
+        return default_notification_settings();
+    }
+
+    $payload = read_user_status_filters_payload(user_status_filters_path($email));
+    $raw = is_array($payload['notification_settings'] ?? null)
+        ? $payload['notification_settings']
+        : [];
+
+    return normalize_notification_settings($raw);
+}
+
+function save_user_notification_settings(string $email, array $settings, array $metadata): array
+{
+    if ($email === '') {
+        return normalize_notification_settings($settings);
+    }
+
+    $path = user_status_filters_path($email);
+    $payload = read_user_status_filters_payload($path);
+    $filters = is_array($payload['filters'] ?? null) ? $payload['filters'] : [];
+    $webfleetFilters = is_array($payload['webfleet_filters'] ?? null) ? $payload['webfleet_filters'] : [];
+    $normalizedSettings = normalize_notification_settings($settings);
+
+    write_user_status_filters_payload($path, $filters, $metadata, $webfleetFilters, $normalizedSettings);
+
+    return $normalizedSettings;
 }
 
 function read_json_assoc_file(string $path): array
@@ -1919,6 +1993,11 @@ $selectedResourceName = '';
 $ownResourceNo = '';
 $allResourcesOptionValue = '__all__';
 $allResourcesOptionLabel = 'Iedereen';
+$notificationSettings = get_user_notification_settings($userEmail);
+$notificationEmailVisible = false;
+$notificationResourceNo = '';
+$notificationResourceName = '';
+$notificationSaveNotice = '';
 
 if ($ajaxAction === 'resource_counts') {
     $resourceNosInput = $_GET['resource_nos'] ?? [];
@@ -1990,6 +2069,18 @@ try {
         }
     }
 
+    foreach ($resourcesForUser as $resource) {
+        $resourceNoCandidate = trim((string) ($resource['No'] ?? ''));
+        if ($resourceNoCandidate === '' || !isset($serviceResourceMap[$resourceNoCandidate])) {
+            continue;
+        }
+
+        $notificationEmailVisible = true;
+        $notificationResourceNo = $resourceNoCandidate;
+        $notificationResourceName = safe_text((string) ($serviceResourceMap[$resourceNoCandidate]['Name'] ?? ''));
+        break;
+    }
+
     if ($selectedPersonNoRequest !== '' && $selectedPersonNoRequest === $allResourcesOptionValue) {
         $selectedResourceNo = $allResourcesOptionValue;
     } elseif ($selectedPersonNoRequest !== '' && isset($serviceResourceMap[$selectedPersonNoRequest])) {
@@ -2005,6 +2096,33 @@ try {
     $selectedResourceName = is_all_resources_selection($selectedResourceNo)
         ? $allResourcesOptionLabel
         : resolve_selected_resource_name($selectedResourceNo, $serviceResourceMap, $resourcesForUser);
+
+    $currentUtcIsoDateTime = gmdate('c');
+    if ($notificationEmailVisible) {
+        $notificationSettings['resource_no'] = $notificationResourceNo;
+        if ($notificationResourceName !== '') {
+            $notificationSettings['resource_name'] = $notificationResourceName;
+        }
+        $notificationSettings['company'] = $company;
+
+        if ($emailNotificationsSubmitRequest === '1') {
+            $wasEnabled = !empty($notificationSettings['enabled']);
+            $isEnabled = $emailNotificationsEnabledRequest === '1';
+            $notificationSettings['enabled'] = $isEnabled;
+
+            if ($isEnabled && !$wasEnabled) {
+                $notificationSettings['last_checked_at'] = $currentUtcIsoDateTime;
+            }
+
+            $notificationSettings = save_user_notification_settings($userEmail, $notificationSettings, $statusFilterMetadata);
+            $notificationSaveNotice = 'Meldingsinstelling opgeslagen.';
+        }
+
+        if ($selectedResourceNo !== '' && $selectedResourceNo === $notificationResourceNo) {
+            $notificationSettings['last_checked_at'] = $currentUtcIsoDateTime;
+            $notificationSettings = save_user_notification_settings($userEmail, $notificationSettings, $statusFilterMetadata);
+        }
+    }
 
     if ($selectedResourceNo !== '') {
         $workOrders = fetch_app_workorders_chunked(
@@ -2826,6 +2944,37 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             color: var(--text);
         }
 
+        .company-select-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .company-select-row .company-select {
+            flex: 1 1 auto;
+        }
+
+        .icon-button {
+            border: 1px solid var(--border);
+            background: #fff;
+            color: var(--text);
+            border-radius: 10px;
+            width: 42px;
+            min-width: 42px;
+            height: 42px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.05rem;
+            cursor: pointer;
+        }
+
+        .icon-button:hover,
+        .icon-button:focus-visible {
+            border-color: #b7c8da;
+            background: #f7f9fb;
+        }
+
         .toolbar .actions {
             display: flex;
             justify-content: flex-end;
@@ -3088,6 +3237,72 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             color: var(--text);
         }
 
+        .email-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 4300;
+            display: grid;
+            place-items: center;
+            padding: 14px;
+        }
+
+        .email-modal[hidden] {
+            display: none;
+        }
+
+        .email-modal-backdrop {
+            position: absolute;
+            inset: 0;
+            background: rgba(21, 34, 51, 0.46);
+        }
+
+        .email-modal-card {
+            position: relative;
+            z-index: 1;
+            width: min(100%, 380px);
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px;
+            display: grid;
+            gap: 10px;
+        }
+
+        .email-modal-title {
+            margin: 0;
+            font-size: 1rem;
+        }
+
+        .email-modal-subtitle {
+            margin: 0;
+            color: var(--muted);
+            font-size: .85rem;
+        }
+
+        .email-modal-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: .92rem;
+        }
+
+        .email-modal-toggle input {
+            width: auto;
+            margin: 0;
+        }
+
+        .email-modal-note {
+            margin: 0;
+            color: var(--muted);
+            font-size: .83rem;
+        }
+
+        .email-modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
         .page-loader {
             position: fixed;
             inset: 0;
@@ -3333,13 +3548,17 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             data-nav-form>
             <div class="field">
                 <label for="company">Bedrijf</label>
-                <select id="company" name="company" onchange="this.form.submit()">
-                    <?php foreach ($companies as $companyOption): ?>
-                        <option value="<?= htmlspecialchars($companyOption) ?>" <?= $companyOption === $company ? 'selected' : '' ?>>
-                            <?= htmlspecialchars($companyOption) ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
+                <div class="company-select-row">
+                    <select id="company" class="company-select" name="company" onchange="this.form.submit()">
+                        <?php foreach ($companies as $companyOption): ?>
+                            <option value="<?= htmlspecialchars($companyOption) ?>" <?= $companyOption === $company ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($companyOption) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <button id="open-email-notification" class="icon-button" type="button" aria-label="E-mailmeldingen"
+                        title="E-mailmeldingen">✉</button>
+                </div>
             </div>
             <div class="field">
                 <label for="person">Servicemonteur</label>
@@ -3424,6 +3643,9 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                     value="<?= htmlspecialchars($statusFiltersPayloadValue) ?>" />
                 <input id="webfleet_status_filters" name="webfleet_status_filters" type="hidden"
                     value="<?= htmlspecialchars($webfleetStatusFiltersPayloadValue) ?>" />
+                <input id="email_notifications_submit" name="email_notifications_submit" type="hidden" value="0" />
+                <input id="email_notifications_enabled" name="email_notifications_enabled" type="hidden"
+                    value="<?= !empty($notificationSettings['enabled']) ? '1' : '0' ?>" />
                 <button id="apply-filters-button" type="submit">Toepassen</button>
             </div>
         </form>
@@ -3486,6 +3708,40 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                 </div>
             </div>
         </div>
+
+        <div id="email-notification-modal" class="email-modal" hidden>
+            <div class="email-modal-backdrop" data-email-close></div>
+            <div class="email-modal-card" role="dialog" aria-modal="true" aria-labelledby="email-modal-title">
+                <h2 id="email-modal-title" class="email-modal-title">E-mailmeldingen</h2>
+                <p class="email-modal-subtitle">Ontvang elk uur een overzicht met nieuwe werkorders.</p>
+
+                <?php if ($notificationEmailVisible): ?>
+                    <label class="email-modal-toggle">
+                        <input id="email-notification-checkbox" type="checkbox" <?= !empty($notificationSettings['enabled']) ? 'checked' : '' ?> />
+                        <span>Meldingen inschakelen voor
+                            <?= htmlspecialchars($notificationResourceName !== '' ? $notificationResourceName : $userEmail) ?></span>
+                    </label>
+                    <?php if (trim((string) ($notificationSettings['last_checked_at'] ?? '')) !== ''): ?>
+                        <p class="email-modal-note">Laatst gezocht:
+                            <?= htmlspecialchars((string) $notificationSettings['last_checked_at']) ?> (UTC)</p>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <p class="email-modal-note">Deze optie is alleen beschikbaar als jouw e-mailadres aan een servicemonteur
+                        is gekoppeld.</p>
+                <?php endif; ?>
+
+                <div class="email-modal-actions">
+                    <button class="button secondary" type="button" data-email-close>Annuleren</button>
+                    <?php if ($notificationEmailVisible): ?>
+                        <button id="save-email-notification" class="button" type="button">Opslaan</button>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+
+        <?php if ($notificationSaveNotice !== ''): ?>
+            <div class="card" role="status" aria-live="polite"><?= htmlspecialchars($notificationSaveNotice) ?></div>
+        <?php endif; ?>
 
         <?php if ($errorMessage !== ''): ?>
             <div class="alert">Fout bij laden van Business Central data: <?= htmlspecialchars($errorMessage) ?></div>
@@ -4111,13 +4367,20 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             const pickDayButtonEl = document.getElementById('pick-day');
             const dayPickerInputEl = document.getElementById('date_day');
             const statusModalEl = document.getElementById('status-filter-modal');
+            const emailModalEl = document.getElementById('email-notification-modal');
             const openStatusFilterEl = document.getElementById('open-status-filter');
+            const openEmailNotificationEl = document.getElementById('open-email-notification');
             const saveStatusFilterEl = document.getElementById('save-status-filter');
+            const saveEmailNotificationEl = document.getElementById('save-email-notification');
             const statusFiltersInputEl = document.getElementById('status_filters');
             const webfleetStatusFiltersInputEl = document.getElementById('webfleet_status_filters');
+            const emailNotificationsSubmitInputEl = document.getElementById('email_notifications_submit');
+            const emailNotificationsEnabledInputEl = document.getElementById('email_notifications_enabled');
+            const emailNotificationCheckboxEl = document.getElementById('email-notification-checkbox');
             const statusFilterCheckboxEls = Array.from(document.querySelectorAll('.status-filter-checkbox'));
             const webfleetFilterCheckboxEls = Array.from(document.querySelectorAll('.webfleet-filter-checkbox'));
             const statusCloseEls = Array.from(document.querySelectorAll('[data-status-close]'));
+            const emailCloseEls = Array.from(document.querySelectorAll('[data-email-close]'));
             let searchApplyHintTimeoutId = 0;
 
             function nudgeApplyButton ()
@@ -4234,11 +4497,37 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                 statusModalEl.hidden = false;
             }
 
+            function closeEmailModal ()
+            {
+                if (!emailModalEl)
+                {
+                    return;
+                }
+                emailModalEl.hidden = true;
+            }
+
+            function openEmailModal ()
+            {
+                if (!emailModalEl)
+                {
+                    return;
+                }
+                emailModalEl.hidden = false;
+            }
+
             if (openStatusFilterEl)
             {
                 openStatusFilterEl.addEventListener('click', function ()
                 {
                     openStatusModal();
+                });
+            }
+
+            if (openEmailNotificationEl)
+            {
+                openEmailNotificationEl.addEventListener('click', function ()
+                {
+                    openEmailModal();
                 });
             }
 
@@ -4250,8 +4539,22 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                 });
             });
 
+            emailCloseEls.forEach(function (closeEl)
+            {
+                closeEl.addEventListener('click', function ()
+                {
+                    closeEmailModal();
+                });
+            });
+
             document.addEventListener('keydown', function (event)
             {
+                if (event.key === 'Escape' && emailModalEl && !emailModalEl.hidden)
+                {
+                    closeEmailModal();
+                    return;
+                }
+
                 if (event.key === 'Escape' && statusModalEl && !statusModalEl.hidden)
                 {
                     closeStatusModal();
@@ -4300,6 +4603,30 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                     {
                         showLoader();
                         submitFormSafely(openStatusFilterEl.form);
+                    }
+                });
+            }
+
+            if (saveEmailNotificationEl)
+            {
+                saveEmailNotificationEl.addEventListener('click', function ()
+                {
+                    if (emailNotificationsEnabledInputEl)
+                    {
+                        emailNotificationsEnabledInputEl.value = emailNotificationCheckboxEl && emailNotificationCheckboxEl.checked ? '1' : '0';
+                    }
+
+                    if (emailNotificationsSubmitInputEl)
+                    {
+                        emailNotificationsSubmitInputEl.value = '1';
+                    }
+
+                    closeEmailModal();
+
+                    if (openEmailNotificationEl && openEmailNotificationEl.form)
+                    {
+                        showLoader();
+                        submitFormSafely(openEmailNotificationEl.form);
                     }
                 });
             }
