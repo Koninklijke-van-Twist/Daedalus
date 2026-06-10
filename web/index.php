@@ -61,6 +61,9 @@ $odataTtl = [
     'werkorders_material_flags' => $hour,
     'workorders_list' => $hour,
     'workorder_detail' => $minute * 15,
+    'assembly_orders_list' => $hour,
+    'assembly_order_detail' => $minute * 15,
+    'assembly_lines' => $minute * 15,
     'planning_lines' => $minute * 15,
     'item_task_flags' => $hour,
     'bin_lookup' => $minute * 15,
@@ -73,6 +76,7 @@ if ($userEmail === '') {
 }
 $statusFilterOwnerEmail = $sessionUserEmail;
 $selectedWorkOrderNo = trim((string) ($_GET['workorder'] ?? ''));
+$selectedAssemblyNo = trim((string) ($_GET['assembly'] ?? ''));
 $selectedPersonNoRequest = trim((string) ($_GET['person'] ?? ''));
 $searchQuery = trim((string) ($_GET['q'] ?? ''));
 $statusFiltersRequest = trim((string) ($_GET['status_filters'] ?? ''));
@@ -1979,6 +1983,652 @@ function workorder_matches_query(array $workOrder, string $searchQuery): bool
     return strpos($workOrderNo, $needle) !== false || strpos($taskDescription, $needle) !== false;
 }
 
+function assigned_user_id_name_fallback_values(array $resourceRow): array
+{
+    $values = [];
+    foreach (['Search_Name', 'Name', 'Name_2'] as $field) {
+        $text = trim((string) ($resourceRow[$field] ?? ''));
+        if ($text === '') {
+            continue;
+        }
+
+        $normalizedName = preg_replace('/^[A-Z]\.\s*/i', '', $text);
+        $normalizedName = is_string($normalizedName) ? trim($normalizedName) : trim($text);
+        if ($normalizedName === '') {
+            continue;
+        }
+
+        $values[] = 'KVT\\' . $normalizedName;
+        $compactName = str_replace(' ', '', $normalizedName);
+        if ($compactName !== '' && $compactName !== $normalizedName) {
+            $values[] = 'KVT\\' . $compactName;
+        }
+    }
+
+    return $values;
+}
+
+function assigned_user_id_values_for_resource(array $resourceRow): array
+{
+    $rawValues = [];
+    $kvtUserId = trim((string) ($resourceRow['KVT_User_ID'] ?? ''));
+    if ($kvtUserId !== '') {
+        $rawValues[] = 'KVT\\' . $kvtUserId;
+    }
+
+    $email = normalize_email((string) ($resourceRow['E_Mail'] ?? ''));
+    if ($email !== '') {
+        $localPart = trim((string) (explode('@', $email)[0] ?? ''));
+        if ($localPart !== '') {
+            $rawValues[] = 'KVT\\' . $localPart;
+        }
+    }
+
+    $timeSheetOwnerUserId = trim((string) ($resourceRow['Time_Sheet_Owner_User_ID'] ?? ''));
+    if ($timeSheetOwnerUserId !== '') {
+        $rawValues[] = $timeSheetOwnerUserId;
+    }
+
+    foreach (assigned_user_id_name_fallback_values($resourceRow) as $fallbackValue) {
+        $rawValues[] = $fallbackValue;
+    }
+
+    $values = [];
+    foreach ($rawValues as $rawValue) {
+        $value = trim($rawValue);
+        if ($value === '') {
+            continue;
+        }
+
+        $values[$value] = true;
+        $values[strtoupper($value)] = true;
+        $values[strtolower($value)] = true;
+    }
+
+    return array_keys($values);
+}
+
+function normalize_assigned_user_id(string $value): string
+{
+    $normalized = trim($value);
+    if ($normalized === '') {
+        return '';
+    }
+
+    if (preg_match('/^kvt[\\\\\\/](.+)$/i', $normalized, $matches) === 1) {
+        return strtolower(trim((string) ($matches[1] ?? '')));
+    }
+
+    return strtolower($normalized);
+}
+
+function assembly_assigned_user_matches_resource(array $row, array $resourceRow): bool
+{
+    $normalizedAssigned = normalize_assigned_user_id((string) ($row['Assigned_User_ID'] ?? ''));
+    if ($normalizedAssigned === '') {
+        return false;
+    }
+
+    foreach (assigned_user_id_values_for_resource($resourceRow) as $candidate) {
+        if ($normalizedAssigned === normalize_assigned_user_id($candidate)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function assembly_order_date_bounds(array $row): array
+{
+    $orderStart = parse_date_ymd(substr(trim((string) ($row['Starting_Date'] ?? '')), 0, 10));
+    if (!($orderStart instanceof DateTimeImmutable)) {
+        return [null, null];
+    }
+
+    $orderEnd = parse_date_ymd(substr(trim((string) ($row['Ending_Date'] ?? '')), 0, 10));
+    if (!($orderEnd instanceof DateTimeImmutable)) {
+        $orderEnd = $orderStart;
+    }
+
+    if ($orderEnd < $orderStart) {
+        $orderEnd = $orderStart;
+    }
+
+    return [$orderStart, $orderEnd];
+}
+
+function assembly_order_overlaps_range(array $row, DateTimeImmutable $rangeStart, DateTimeImmutable $rangeEnd): bool
+{
+    [$orderStart, $orderEnd] = assembly_order_date_bounds($row);
+    if (!($orderStart instanceof DateTimeImmutable) || !($orderEnd instanceof DateTimeImmutable)) {
+        return false;
+    }
+
+    return $orderStart <= $rangeEnd && $orderEnd >= $rangeStart;
+}
+
+function assembly_order_list_date(
+    array $row,
+    DateTimeImmutable $rangeStart,
+    DateTimeImmutable $rangeEnd,
+    DateTimeImmutable $today
+): string {
+    [$orderStart, $orderEnd] = assembly_order_date_bounds($row);
+    if (!($orderStart instanceof DateTimeImmutable) || !($orderEnd instanceof DateTimeImmutable)) {
+        $fallback = substr(trim((string) ($row['Starting_Date'] ?? '')), 0, 10);
+        return $fallback !== '' ? $fallback : '';
+    }
+
+    if ($orderStart >= $rangeStart && $orderEnd <= $rangeEnd) {
+        if ($orderEnd < $today) {
+            return $orderEnd->format('Y-m-d');
+        }
+
+        return $today->format('Y-m-d');
+    }
+
+    return $orderStart->format('Y-m-d');
+}
+
+function build_assigned_user_id_odata_filter(array $assignedUserIds): string
+{
+    $parts = [];
+    foreach ($assignedUserIds as $assignedUserId) {
+        $value = trim((string) $assignedUserId);
+        if ($value === '') {
+            continue;
+        }
+
+        $parts[] = "Assigned_User_ID eq '" . odata_quote_string($value) . "'";
+    }
+
+    if (empty($parts)) {
+        return '';
+    }
+
+    if (count($parts) === 1) {
+        return $parts[0];
+    }
+
+    return '(' . implode(' or ', $parts) . ')';
+}
+
+function fetch_resource_identity_by_no(
+    string $environment,
+    string $company,
+    string $resourceNo,
+    array $auth
+): array {
+    $normalizedResourceNo = trim($resourceNo);
+    if ($normalizedResourceNo === '' || is_all_resources_selection($normalizedResourceNo)) {
+        return [];
+    }
+
+    return odata_fetch_single_row(
+        $environment,
+        $company,
+        'AppResource',
+        'No,Name,Name_2,Search_Name,E_Mail,KVT_User_ID,Time_Sheet_Owner_User_ID',
+        "No eq '" . odata_quote_string($normalizedResourceNo) . "'",
+        $auth,
+        odata_ttl('resource_by_email')
+    );
+}
+
+function assembly_sort_key(
+    array $row,
+    DateTimeImmutable $rangeStart,
+    DateTimeImmutable $rangeEnd,
+    DateTimeImmutable $today
+): string {
+    $date = assembly_order_list_date($row, $rangeStart, $rangeEnd, $today);
+    if ($date === '') {
+        $date = '9999-12-31';
+    }
+
+    return $date . ' 00:00';
+}
+
+function assembly_order_title_text(array $assemblyOrder): string
+{
+    $description = trim((string) ($assemblyOrder['Description'] ?? ''));
+    if ($description !== '') {
+        return $description;
+    }
+
+    $itemNo = trim((string) ($assemblyOrder['Item_No'] ?? ''));
+    return $itemNo !== '' ? $itemNo : '-';
+}
+
+function assembly_matches_query(array $assemblyOrder, string $searchQuery): bool
+{
+    $needle = strtolower(trim($searchQuery));
+    if ($needle === '') {
+        return true;
+    }
+
+    $assemblyNo = strtolower((string) ($assemblyOrder['No'] ?? ''));
+    $description = strtolower((string) ($assemblyOrder['Description'] ?? ''));
+    $itemNo = strtolower((string) ($assemblyOrder['Item_No'] ?? ''));
+    return strpos($assemblyNo, $needle) !== false
+        || strpos($description, $needle) !== false
+        || strpos($itemNo, $needle) !== false;
+}
+
+function parse_direct_order_search(string $query): ?array
+{
+    $normalized = strtoupper(trim($query));
+    if ($normalized === '') {
+        return null;
+    }
+
+    if (preg_match('/^ASS\d{7}$/', $normalized) === 1) {
+        return [
+            'type' => 'assembly',
+            'no' => $normalized,
+        ];
+    }
+
+    if (preg_match('/^WO\d{7}$/', $normalized) === 1) {
+        return [
+            'type' => 'workorder',
+            'no' => $normalized,
+        ];
+    }
+
+    if (preg_match('/^40\d{5}$/', $normalized) === 1) {
+        return [
+            'type' => 'workorder',
+            'no' => $normalized,
+        ];
+    }
+
+    return null;
+}
+
+function fetch_app_workorder_list_row_by_no(
+    string $environment,
+    string $company,
+    string $workOrderNo,
+    array $auth
+): array {
+    $normalizedWorkOrderNo = trim($workOrderNo);
+    if ($normalizedWorkOrderNo === '') {
+        return [];
+    }
+
+    return odata_fetch_single_row(
+        $environment,
+        $company,
+        'AppWerkorders',
+        'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
+        "No eq '" . odata_quote_string($normalizedWorkOrderNo) . "'",
+        $auth,
+        odata_ttl('workorder_detail')
+    );
+}
+
+function fetch_assembly_list_row_by_no(
+    string $environment,
+    string $company,
+    string $assemblyNo,
+    array $auth
+): array {
+    return fetch_single_assembly_row_by_no(
+        $environment,
+        $company,
+        $assemblyNo,
+        'No,Item_No,Description,Description_2,Starting_Date,Ending_Date,Remaining_Quantity,Quantity,Status,Assigned_User_ID,Unit_of_Measure_Code',
+        $auth
+    );
+}
+
+function fetch_assembly_orders_chunked(
+    string $environment,
+    string $company,
+    string $resourceNo,
+    DateTimeImmutable $rangeStart,
+    DateTimeImmutable $rangeEnd,
+    array $auth
+): array {
+    $resourceNo = trim($resourceNo);
+    if ($resourceNo === '') {
+        return [];
+    }
+
+    $isAllResources = is_all_resources_selection($resourceNo);
+    $resourceIdentity = [];
+    $assignedUserFilter = '';
+    if (!$isAllResources) {
+        $resourceIdentity = fetch_resource_identity_by_no($environment, $company, $resourceNo, $auth);
+        $assignedUserFilter = build_assigned_user_id_odata_filter(
+            assigned_user_id_values_for_resource($resourceIdentity)
+        );
+        if ($assignedUserFilter === '') {
+            return [];
+        }
+    }
+
+    $chunks = build_week_chunks($rangeStart, $rangeEnd);
+    if (empty($chunks)) {
+        return [];
+    }
+
+    $allRows = [];
+    $seenAssemblyOrders = [];
+    foreach ($chunks as $chunk) {
+        $start = $chunk['start']->format('Y-m-d');
+        $end = $chunk['end']->format('Y-m-d');
+
+        $filterParts = [
+            "Starting_Date le " . $end,
+            "Ending_Date ge " . $start,
+        ];
+        if ($assignedUserFilter !== '') {
+            $filterParts[] = $assignedUserFilter;
+        }
+        $filter = implode(' and ', $filterParts);
+
+        $url = odata_company_url($environment, $company, 'AssemblageKop', [
+            '$select' => 'No,Item_No,Description,Description_2,Starting_Date,Ending_Date,Remaining_Quantity,Quantity,Status,Assigned_User_ID,Unit_of_Measure_Code',
+            '$filter' => $filter,
+            '$orderby' => 'Starting_Date asc,No asc',
+        ]);
+
+        $rows = odata_get_all($url, $auth, odata_ttl('assembly_orders_list'));
+        foreach ($rows as $row) {
+            if (!assembly_order_overlaps_range($row, $rangeStart, $rangeEnd)) {
+                continue;
+            }
+
+            if (!$isAllResources && !assembly_assigned_user_matches_resource($row, $resourceIdentity)) {
+                continue;
+            }
+
+            $assemblyNo = trim((string) ($row['No'] ?? ''));
+            if ($assemblyNo !== '' && isset($seenAssemblyOrders[$assemblyNo])) {
+                continue;
+            }
+
+            if ($assemblyNo !== '') {
+                $seenAssemblyOrders[$assemblyNo] = true;
+            }
+
+            $allRows[] = $row;
+        }
+    }
+
+    return $allRows;
+}
+
+function fetch_single_assembly_row_by_no(
+    string $environment,
+    string $company,
+    string $assemblyNo,
+    string $select,
+    array $auth
+): array {
+    $normalizedAssemblyNo = trim($assemblyNo);
+    if ($normalizedAssemblyNo === '' || trim($select) === '') {
+        return [];
+    }
+
+    return odata_fetch_single_row(
+        $environment,
+        $company,
+        'AssemblageKop',
+        $select,
+        "No eq '" . odata_quote_string($normalizedAssemblyNo) . "'",
+        $auth,
+        odata_ttl('assembly_order_detail')
+    );
+}
+
+function fetch_assembly_lines_by_no(
+    string $environment,
+    string $company,
+    string $assemblyNo,
+    array $auth
+): array {
+    $normalizedAssemblyNo = trim($assemblyNo);
+    if ($normalizedAssemblyNo === '') {
+        return [];
+    }
+
+    $url = odata_company_url($environment, $company, 'AssemblageRegels', [
+        '$select' => 'Line_No,Avail_Warning,Type,No,Description,Description_2,Unit_of_Measure_Code,Bin_Code,Location_Code,Quantity,Consumed_Quantity,KVT_Expanded_Description,KVT_Extended_Text',
+        '$filter' => "Document_No eq '" . odata_quote_string($normalizedAssemblyNo) . "'",
+        '$orderby' => 'Line_No asc',
+    ]);
+
+    return odata_get_all($url, $auth, odata_ttl('assembly_lines'));
+}
+
+function merge_orders_by_date(
+    array $workOrders,
+    array $assemblyOrders,
+    DateTimeImmutable $rangeStart,
+    DateTimeImmutable $rangeEnd,
+    DateTimeImmutable $today
+): array {
+    $items = [];
+    foreach ($workOrders as $workOrder) {
+        $items[] = [
+            'type' => 'workorder',
+            'data' => $workOrder,
+            'sort_key' => workorder_sort_key($workOrder),
+        ];
+    }
+    foreach ($assemblyOrders as $assemblyOrder) {
+        $items[] = [
+            'type' => 'assembly',
+            'data' => $assemblyOrder,
+            'sort_key' => assembly_sort_key($assemblyOrder, $rangeStart, $rangeEnd, $today),
+        ];
+    }
+
+    usort($items, static function (array $left, array $right): int {
+        $dateCompare = strcmp((string) ($left['sort_key'] ?? ''), (string) ($right['sort_key'] ?? ''));
+        if ($dateCompare !== 0) {
+            return $dateCompare;
+        }
+
+        if (($left['type'] ?? '') !== ($right['type'] ?? '')) {
+            return ($left['type'] ?? '') === 'workorder' ? -1 : 1;
+        }
+
+        $leftNo = trim((string) ($left['data']['No'] ?? ''));
+        $rightNo = trim((string) ($right['data']['No'] ?? ''));
+        return strcmp($leftNo, $rightNo);
+    });
+
+    return $items;
+}
+
+function format_decimal_quantity_display($value): string
+{
+    if (!is_numeric($value)) {
+        return '0';
+    }
+
+    $formatted = rtrim(rtrim(number_format((float) $value, 5, ',', '.'), '0'), ',');
+    return $formatted === '' ? '0' : $formatted;
+}
+
+function assembly_line_type_is_artikel(string $type): bool
+{
+    $normalizedType = strtolower(trim($type));
+    return in_array($normalizedType, ['item', 'artikel'], true);
+}
+
+function assembly_line_type_is_resource(string $type): bool
+{
+    return strtolower(trim($type)) === 'resource';
+}
+
+function assembly_line_is_instructie(array $line): bool
+{
+    if (!assembly_line_type_is_resource((string) ($line['Type'] ?? ''))) {
+        return false;
+    }
+
+    return strtolower(trim((string) ($line['No'] ?? ''))) === 'instructie';
+}
+
+function assembly_instructie_has_extra_content(array $line): bool
+{
+    return trim((string) ($line['Description_2'] ?? '')) !== ''
+        || trim((string) ($line['KVT_Expanded_Description'] ?? '')) !== ''
+        || trim((string) ($line['KVT_Extended_Text'] ?? '')) !== '';
+}
+
+function build_assembly_display_blocks(array $lines): array
+{
+    $blocks = [];
+    $lineCount = count($lines);
+    $index = 0;
+
+    while ($index < $lineCount) {
+        $line = $lines[$index];
+        if (!assembly_line_is_instructie($line)) {
+            $blocks[] = [
+                'type' => 'line',
+                'line' => $line,
+            ];
+            $index++;
+            continue;
+        }
+
+        $chapterLine = $line;
+        $mergedDescriptions = [];
+        $index++;
+
+        while ($index < $lineCount && assembly_line_is_instructie($lines[$index])) {
+            $nextInstructie = $lines[$index];
+            if (assembly_instructie_has_extra_content($nextInstructie)) {
+                break;
+            }
+
+            $mergedDescription = trim((string) ($nextInstructie['Description'] ?? ''));
+            if ($mergedDescription !== '') {
+                $mergedDescriptions[] = $mergedDescription;
+            }
+
+            $index++;
+        }
+
+        $blocks[] = [
+            'type' => 'chapter',
+            'line' => $chapterLine,
+            'merged_descriptions' => $mergedDescriptions,
+        ];
+    }
+
+    return $blocks;
+}
+
+function assembly_chapter_body_html(array $chapterLine, array $mergedDescriptions): string
+{
+    $parts = [];
+    $chapterExtraHtml = assembly_resource_description_html($chapterLine);
+    if ($chapterExtraHtml !== '') {
+        $parts[] = $chapterExtraHtml;
+    }
+
+    foreach ($mergedDescriptions as $mergedDescription) {
+        $mergedHtml = bc_text_html($mergedDescription, '');
+        if ($mergedHtml !== '') {
+            $parts[] = $mergedHtml;
+        }
+    }
+
+    return implode('<br/>', $parts);
+}
+
+function assembly_artikel_line_key(array $line): string
+{
+    $lineNo = trim((string) ($line['Line_No'] ?? ''));
+    $itemNo = trim((string) ($line['No'] ?? ''));
+
+    return $lineNo . '|' . $itemNo;
+}
+
+function assembly_artikel_consumption_is_complete(array $line): bool
+{
+    $consumed = (float) ($line['Consumed_Quantity'] ?? 0);
+    $quantity = (float) ($line['Quantity'] ?? 0);
+
+    if ($quantity <= 0) {
+        return $consumed <= 0;
+    }
+
+    return $consumed >= $quantity;
+}
+
+function workorder_is_revision(array $workOrder): bool
+{
+    return strtoupper(trim((string) ($workOrder['Task_Code'] ?? ''))) === 'W_REV';
+}
+
+function map_planning_line_to_display_line(array $line): array
+{
+    $consumedQuantity = $line['Consumed_Quantity'] ?? null;
+    if (!is_numeric($consumedQuantity)) {
+        $consumedQuantity = $line['KVT_Qty_Picked'] ?? 0;
+    }
+
+    return [
+        'Line_No' => $line['Line_No'] ?? '',
+        'Type' => $line['Type'] ?? '',
+        'No' => $line['No'] ?? '',
+        'Description' => $line['Description'] ?? '',
+        'Description_2' => $line['Description_2'] ?? '',
+        'Unit_of_Measure_Code' => $line['Unit_of_Measure_Code'] ?? '',
+        'Bin_Code' => $line['Bin_Code'] ?? '',
+        'Quantity' => $line['Quantity'] ?? 0,
+        'Consumed_Quantity' => $consumedQuantity,
+        'Avail_Warning' => $line['Avail_Warning'] ?? false,
+        'KVT_Expanded_Description' => $line['KVT_Expanded_Description'] ?? '',
+        'KVT_Extended_Text' => $line['KVT_Extended_Text'] ?? '',
+    ];
+}
+
+function assembly_incomplete_artikel_line_keys(array $displayBlocks): array
+{
+    $keys = [];
+    foreach ($displayBlocks as $displayBlock) {
+        if (($displayBlock['type'] ?? '') !== 'line') {
+            continue;
+        }
+
+        $line = is_array($displayBlock['line'] ?? null) ? $displayBlock['line'] : [];
+        if (!assembly_line_type_is_artikel((string) ($line['Type'] ?? ''))) {
+            continue;
+        }
+
+        if (!assembly_artikel_consumption_is_complete($line)) {
+            $keys[] = assembly_artikel_line_key($line);
+        }
+    }
+
+    return $keys;
+}
+
+function assembly_resource_description_html(array $line): string
+{
+    $parts = [];
+    $expandedDescription = trim((string) ($line['KVT_Expanded_Description'] ?? ''));
+    $extendedText = trim((string) ($line['KVT_Extended_Text'] ?? ''));
+    if ($expandedDescription !== '') {
+        $parts[] = bc_text_html($expandedDescription, '');
+    }
+    if ($extendedText !== '') {
+        $parts[] = bc_text_html($extendedText, '');
+    }
+
+    return implode('<br/>', $parts);
+}
+
 /**
  * Page load
  */
@@ -2024,7 +2674,19 @@ $workOrderMaterialStatusLabels = [];
 $workOrderWebfleetStatusLabels = [];
 $workOrderWebfleetStatusCounts = [];
 $workOrders = [];
+$assemblyOrders = [];
+$mergedOrderList = [];
 $selectedWorkOrder = null;
+$selectedAssemblyOrder = null;
+$assemblyLines = [];
+$assemblyDisplayBlocks = [];
+$assemblyIncompleteArtikelKeys = [];
+$selectedWorkOrderIsRevision = false;
+$workOrderRevisionDisplayBlocks = [];
+$workOrderRevisionIncompleteArtikelKeys = [];
+$showDetailBarcode = false;
+$isDirectOrderSearch = false;
+$directOrderSearch = null;
 $selectedWorkOrderRealArticleCount = 0;
 $selectedWorkOrderMaterialStatusLabel = 'Onbekend';
 $selectedWorkOrderWebfleetStatusLabel = webfleet_default_status_label();
@@ -2054,7 +2716,7 @@ if ($hasWebfleetStatusFiltersRequest && $webfleetStatusFiltersRequest !== '') {
     }
 }
 
-if ($selectedWorkOrderNo === '' && $ajaxAction === '') {
+if ($selectedWorkOrderNo === '' && $selectedAssemblyNo === '' && $ajaxAction === '') {
     write_user_status_filters_payload(
         user_status_filters_path($statusFilterOwnerEmail),
         $userStatusFilters,
@@ -2232,14 +2894,54 @@ try {
     }
 
     if ($selectedResourceNo !== '') {
-        $workOrders = fetch_app_workorders_chunked(
-            $environment,
-            $company,
-            $selectedResourceNo,
-            $rangeStart,
-            $rangeEnd,
-            $auth
-        );
+        $directOrderSearch = parse_direct_order_search($searchQuery);
+        $isDirectOrderSearch = $directOrderSearch !== null;
+
+        if ($isDirectOrderSearch) {
+            $workOrders = [];
+            $assemblyOrders = [];
+            $directOrderType = (string) ($directOrderSearch['type'] ?? '');
+            $directOrderNo = trim((string) ($directOrderSearch['no'] ?? ''));
+
+            if ($directOrderType === 'workorder' && $directOrderNo !== '') {
+                $directWorkOrderRow = fetch_app_workorder_list_row_by_no(
+                    $environment,
+                    $company,
+                    $directOrderNo,
+                    $auth
+                );
+                if (!empty($directWorkOrderRow)) {
+                    $workOrders = [$directWorkOrderRow];
+                }
+            } elseif ($directOrderType === 'assembly' && $directOrderNo !== '') {
+                $directAssemblyRow = fetch_assembly_list_row_by_no(
+                    $environment,
+                    $company,
+                    $directOrderNo,
+                    $auth
+                );
+                if (!empty($directAssemblyRow)) {
+                    $assemblyOrders = [$directAssemblyRow];
+                }
+            }
+        } else {
+            $workOrders = fetch_app_workorders_chunked(
+                $environment,
+                $company,
+                $selectedResourceNo,
+                $rangeStart,
+                $rangeEnd,
+                $auth
+            );
+            $assemblyOrders = fetch_assembly_orders_chunked(
+                $environment,
+                $company,
+                $selectedResourceNo,
+                $rangeStart,
+                $rangeEnd,
+                $auth
+            );
+        }
 
         $workOrderNosForWebfleet = array_map(
             static fn(array $workOrder): string => trim((string) ($workOrder['No'] ?? '')),
@@ -2251,6 +2953,8 @@ try {
             $workOrderNosForWebfleet,
             $auth
         );
+
+        if (!$isDirectOrderSearch) {
         foreach ($workOrderWebfleetStatusLabels as $webfleetStatusLabel) {
             $webfleetStatusText = trim((string) $webfleetStatusLabel);
             if ($webfleetStatusText === '') {
@@ -2418,6 +3122,10 @@ try {
                 $workOrders,
                 static fn(array $workOrder): bool => workorder_matches_query($workOrder, $searchQuery)
             ));
+            $assemblyOrders = array_values(array_filter(
+                $assemblyOrders,
+                static fn(array $assemblyOrder): bool => assembly_matches_query($assemblyOrder, $searchQuery)
+            ));
         }
 
         usort($workOrders, static function (array $left, array $right) use ($workOrderWebfleetStatusLabels): int {
@@ -2446,6 +3154,29 @@ try {
             return strcmp($leftNo, $rightNo);
         });
 
+        usort($assemblyOrders, static function (array $left, array $right) use ($rangeStart, $rangeEnd, $today): int {
+            $dateCompare = strcmp(
+                assembly_sort_key($left, $rangeStart, $rangeEnd, $today),
+                assembly_sort_key($right, $rangeStart, $rangeEnd, $today)
+            );
+            if ($dateCompare !== 0) {
+                return $dateCompare;
+            }
+
+            $leftStatus = strtolower(trim((string) ($left['Status'] ?? '')));
+            $rightStatus = strtolower(trim((string) ($right['Status'] ?? '')));
+            $statusCompare = strcmp($rightStatus, $leftStatus);
+            if ($statusCompare !== 0) {
+                return $statusCompare;
+            }
+
+            return strcmp(
+                trim((string) ($left['No'] ?? '')),
+                trim((string) ($right['No'] ?? ''))
+            );
+        });
+        }
+
         $workOrderNosForCounts = array_map(
             static fn(array $workOrder): string => trim((string) ($workOrder['No'] ?? '')),
             $workOrders
@@ -2464,7 +3195,8 @@ try {
             : [];
 
         if (
-            $notificationEmailVisible
+            !$isDirectOrderSearch
+            && $notificationEmailVisible
             && $selectedWorkOrderNo === ''
             && $selectedResourceNo !== ''
             && $selectedResourceNo === $notificationResourceNo
@@ -2480,6 +3212,8 @@ try {
                 $notificationSettings = save_user_notification_settings($userEmail, $notificationSettings, $statusFilterMetadata);
             }
         }
+
+        $mergedOrderList = merge_orders_by_date($workOrders, $assemblyOrders, $rangeStart, $rangeEnd, $today);
     }
 
     if ($selectedWorkOrderNo !== '') {
@@ -2543,41 +3277,85 @@ try {
                 );
             }
 
+            $selectedWorkOrderIsRevision = workorder_is_revision($selectedWorkOrder);
+
+            $revisionLineSelect = 'Line_No,Type,No,Description,Description_2,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,Bin_Code,KVT_Qty_Picked';
+            $standardLineSelect = 'Line_No,Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Completely_Picked,KVT_Qty_Picked,KVT_Expected_Receipt_Date,LVS_Purchase_Order_No,LVS_Outstanding_Qty_Base,Planning_Date,LVS_Vendor_Name,LVS_Supply_from';
             $linesUrl = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
-                '$select' => 'Line_No,Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Completely_Picked,KVT_Qty_Picked,KVT_Expected_Receipt_Date,LVS_Purchase_Order_No,LVS_Outstanding_Qty_Base,Planning_Date,LVS_Vendor_Name,LVS_Supply_from',
+                '$select' => $selectedWorkOrderIsRevision ? $revisionLineSelect : $standardLineSelect,
                 '$filter' => "LVS_Work_Order_No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
                 '$orderby' => 'Line_No asc',
             ]);
             $planningLinesAll = odata_get_all($linesUrl, $auth, odata_ttl('planning_lines'));
-            $planningLines = array_values(array_filter($planningLinesAll, static function (array $line): bool {
-                $type = strtolower(trim((string) ($line['Type'] ?? '')));
-                return $type === 'item' || $type === 'artikel';
-            }));
 
-            $itemNos = [];
-            foreach ($planningLines as $line) {
-                $itemNo = trim((string) ($line['No'] ?? ''));
-                if ($itemNo !== '') {
-                    $itemNos[] = $itemNo;
+            if ($selectedWorkOrderIsRevision) {
+                $revisionDisplayLines = array_map(
+                    static fn(array $line): array => map_planning_line_to_display_line($line),
+                    $planningLinesAll
+                );
+                $workOrderRevisionDisplayBlocks = build_assembly_display_blocks($revisionDisplayLines);
+                $workOrderRevisionIncompleteArtikelKeys = assembly_incomplete_artikel_line_keys(
+                    $workOrderRevisionDisplayBlocks
+                );
+
+                $selectedWorkOrderRealArticleCount = 0;
+                foreach ($revisionDisplayLines as $revisionLine) {
+                    if (assembly_line_type_is_artikel((string) ($revisionLine['Type'] ?? ''))) {
+                        $selectedWorkOrderRealArticleCount++;
+                    }
                 }
+            } else {
+                $planningLines = array_values(array_filter($planningLinesAll, static function (array $line): bool {
+                    $type = strtolower(trim((string) ($line['Type'] ?? '')));
+                    return $type === 'item' || $type === 'artikel';
+                }));
+
+                $itemNos = [];
+                foreach ($planningLines as $line) {
+                    $itemNo = trim((string) ($line['No'] ?? ''));
+                    if ($itemNo !== '') {
+                        $itemNos[] = $itemNo;
+                    }
+                }
+
+                $itemTaskFlagsMap = fetch_item_task_flags_map($environment, $company, $itemNos, $auth);
+                $splitLines = split_task_article_lines($planningLines, $itemTaskFlagsMap);
+                $taskArticleLines = $splitLines['task'];
+                $planningLines = $splitLines['article'];
+
+                $binLocationMaps = fetch_bin_location_maps($environment, $company, $planningLines, $auth);
+                $planningLines = apply_bin_locations_to_lines($planningLines, $binLocationMaps);
+
+                $selectedWorkOrderRealArticleCount = count($planningLines);
             }
+        }
+    }
 
-            $itemTaskFlagsMap = fetch_item_task_flags_map($environment, $company, $itemNos, $auth);
-            $splitLines = split_task_article_lines($planningLines, $itemTaskFlagsMap);
-            $taskArticleLines = $splitLines['task'];
-            $planningLines = $splitLines['article'];
-
-            $binLocationMaps = fetch_bin_location_maps($environment, $company, $planningLines, $auth);
-            $planningLines = apply_bin_locations_to_lines($planningLines, $binLocationMaps);
-
-            $selectedWorkOrderRealArticleCount = count($planningLines);
+    if ($selectedAssemblyNo !== '') {
+        $selectedAssemblyOrderRow = fetch_single_assembly_row_by_no(
+            $environment,
+            $company,
+            $selectedAssemblyNo,
+            'No,Item_No,Description,Description_2,Starting_Date,Ending_Date,Remaining_Quantity,Quantity,Status,Assigned_User_ID,Unit_of_Measure_Code',
+            $auth
+        );
+        if (!empty($selectedAssemblyOrderRow)) {
+            $selectedAssemblyOrder = $selectedAssemblyOrderRow;
+            $assemblyLines = fetch_assembly_lines_by_no($environment, $company, $selectedAssemblyNo, $auth);
+            $assemblyDisplayBlocks = build_assembly_display_blocks($assemblyLines);
+            $assemblyIncompleteArtikelKeys = assembly_incomplete_artikel_line_keys($assemblyDisplayBlocks);
         }
     }
 } catch (Throwable $throwable) {
     $errorMessage = $throwable->getMessage();
 }
 
-$title = $selectedWorkOrderNo !== '' ? 'Werkorder details' : 'Mijn werkorders';
+$isDetailView = $selectedWorkOrder !== null || $selectedAssemblyOrder !== null;
+$showDetailBarcode = $selectedAssemblyOrder !== null
+    || ($selectedWorkOrder !== null && $selectedWorkOrderIsRevision);
+$title = $selectedWorkOrder !== null
+    ? 'Werkorder details'
+    : ($selectedAssemblyOrder !== null ? 'Assemblageorder details' : 'Mijn werkorders');
 $listQuery = [
     'company' => $company,
     'person' => $selectedResourceNo,
@@ -2923,6 +3701,118 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             font-weight: 700;
             color: var(--text);
             margin: 0 0 2px;
+        }
+
+        .order-barcode {
+            display: block;
+            max-width: 100%;
+            margin: 2px 0 8px;
+        }
+
+        .order-barcode svg {
+            max-width: 100%;
+            height: auto;
+        }
+
+        .assembly-availability-warning {
+            margin-top: 6px;
+            color: #8e2a2a;
+            font-size: .86rem;
+            font-weight: 600;
+        }
+
+        .assembly-chapter-title {
+            margin: 14px 0 6px;
+            font-size: 1rem;
+            font-weight: 700;
+            line-height: 1.35;
+            color: var(--text);
+        }
+
+        .assembly-chapter-title:first-child {
+            margin-top: 0;
+        }
+
+        .assembly-chapter-body {
+            margin: 0;
+            white-space: normal;
+        }
+
+        .assembly-chapter-divider {
+            height: 0;
+            border: 0;
+            border-top: 1px dashed var(--border);
+            opacity: .65;
+            margin: 6px 0 2px;
+        }
+
+        .assembly-lines-card {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+        }
+
+        .assembly-chapter-group {
+            margin-top: 12px;
+            padding-top: 10px;
+        }
+
+        .assembly-indented-lines {
+            margin-top: 6px;
+            padding-left: 12px;
+            border-left: 2px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .assembly-line-artikel,
+        .assembly-line-resource,
+        .assembly-line-other {
+            position: relative;
+        }
+
+        .assembly-artikel-desc,
+        .assembly-resource-label {
+            margin: 0;
+            font-size: .95rem;
+            line-height: 1.35;
+        }
+
+        .assembly-artikel-meta {
+            margin: 2px 0 0;
+            color: var(--muted);
+            font-size: .82rem;
+            line-height: 1.3;
+        }
+
+        .assembly-resource-extra {
+            margin-top: 4px;
+            margin-bottom: 0;
+        }
+
+        .assembly-line-artikel.assembly-next-artikel {
+            overflow: hidden;
+        }
+
+        .assembly-line-artikel.assembly-next-artikel::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            right: 0;
+            width: 56px;
+            height: 100%;
+            max-height: 48px;
+            transform: translateY(-50%);
+            background: #d9ecff;
+            clip-path: polygon(100% 0, 100% 100%, 0 50%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .assembly-line-artikel.assembly-next-artikel > * {
+            position: relative;
+            z-index: 1;
         }
 
         .wo-task {
@@ -3662,6 +4552,26 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                 padding-top: 20px;
             }
         }
+
+        @media print {
+            .back {
+                display: none !important;
+            }
+
+            .assembly-chapter-group {
+                break-inside: avoid;
+                page-break-inside: avoid;
+            }
+
+            .assembly-chapter-title {
+                break-after: avoid;
+                page-break-after: avoid;
+            }
+
+            .assembly-line-artikel.assembly-next-artikel::after {
+                display: none;
+            }
+        }
     </style>
 </head>
 
@@ -3669,7 +4579,7 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
     <main class="page">
         <img src="logo-website.png" alt="KVT" class="logo" />
 
-        <form class="toolbar<?= $selectedWorkOrder !== null ? ' is-hidden' : '' ?>" method="get" action="index.php"
+        <form class="toolbar<?= $isDetailView ? ' is-hidden' : '' ?>" method="get" action="index.php"
             data-nav-form>
             <div class="field">
                 <label for="company">Bedrijf</label>
@@ -3734,9 +4644,9 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                 </div>
             </div>
             <div class="field">
-                <label for="q">Zoeken op werkorder of omschrijving</label>
+                <label for="q">Zoeken op werkorder, assemblage of omschrijving</label>
                 <input id="q" name="q" type="search" value="<?= htmlspecialchars($searchQuery) ?>"
-                    placeholder="Bijv. WO-123 of onderhoud" />
+                    placeholder="Bijv. WO-123, AO-456 of onderhoud" />
             </div>
             <div class="actions">
                 <button id="open-status-filter" class="status-filter-trigger" type="button">Statusfilter</button>
@@ -3881,8 +4791,11 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
 
         <?php if ($selectedWorkOrder !== null): ?>
             <section class="detail-head">
-                <a href="<?= htmlspecialchars($listHref) ?>" class="back" data-nav-link>← Terug naar werkorders</a>
+                <a href="<?= htmlspecialchars($listHref) ?>" class="back" data-nav-link>← Terug naar overzicht</a>
                 <p class="wo-no-large"><?= bc_text_html((string) ($selectedWorkOrder['No'] ?? '')) ?></p>
+                <?php if ($showDetailBarcode): ?>
+                    <svg class="order-barcode" data-barcode-value="<?= htmlspecialchars((string) ($selectedWorkOrder['No'] ?? ''), ENT_QUOTES, 'UTF-8') ?>" aria-hidden="true"></svg>
+                <?php endif; ?>
                 <h1 class="title">
                     <?= bc_text_html(workorder_task_text($selectedWorkOrder)) ?>
                 </h1>
@@ -3967,149 +4880,245 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                 </div>
             </section>
 
-            <?php if (count($taskArticleLines) > 0): ?>
-                <h2 class="title">Taakomschrijving:</h2>
-                <section class="line-list">
-                    <?php foreach ($taskArticleLines as $line): ?>
-                        <?php $taskExtendedText = trim((string) ($line['KVT_Extended_Text'] ?? '')); ?>
-                        <article class="card">
-                            <p class="line-name"><?= bc_text_html((string) ($line['Description'] ?? '')) ?></p>
-                            <?php if ($taskExtendedText !== ''): ?>
-                                <div class="line-desc">
-                                    <?= bc_text_html($taskExtendedText, '') ?>
-                                </div>
-                            <?php endif; ?>
-                        </article>
-                    <?php endforeach; ?>
-                </section>
-            <?php endif; ?>
-
-            <h2 class="title">Artikelen:</h2>
-
-            <?php if (count($planningLines) === 0): ?>
-                <div class="card empty">Geen artikelen gevonden voor deze werkorder.</div>
+            <?php if ($selectedWorkOrderIsRevision): ?>
+                <h2 class="title">Regels:</h2>
+                <?php
+                $displayBlocks = $workOrderRevisionDisplayBlocks;
+                $incompleteArtikelKeys = $workOrderRevisionIncompleteArtikelKeys;
+                $emptyMessage = 'Geen regels gevonden voor deze werkorder.';
+                require __DIR__ . '/partials/assembly_style_line_list.php';
+                ?>
             <?php else: ?>
-                <section class="line-list">
-                    <?php foreach ($planningLines as $line): ?>
-                        <?php $lineStatus = material_line_status($line); ?>
-                        <?php $extendedText = trim((string) ($line['KVT_Extended_Text'] ?? '')); ?>
-                        <?php $lineNo = trim((string) ($line['No'] ?? '')); ?>
-                        <article class="card">
-                            <div class="row">
-                                <div>
-                                    <p class="line-name"><?= bc_text_html((string) ($line['Description'] ?? '')) ?></p>
-                                    <p class="line-subtitle"><?= bc_text_html($lineNo !== '' ? $lineNo : '-') ?></p>
+                <?php if (count($taskArticleLines) > 0): ?>
+                    <h2 class="title">Taakomschrijving:</h2>
+                    <section class="line-list">
+                        <?php foreach ($taskArticleLines as $line): ?>
+                            <?php $taskExtendedText = trim((string) ($line['KVT_Extended_Text'] ?? '')); ?>
+                            <article class="card">
+                                <p class="line-name"><?= bc_text_html((string) ($line['Description'] ?? '')) ?></p>
+                                <?php if ($taskExtendedText !== ''): ?>
+                                    <div class="line-desc">
+                                        <?= bc_text_html($taskExtendedText, '') ?>
+                                    </div>
+                                <?php endif; ?>
+                            </article>
+                        <?php endforeach; ?>
+                    </section>
+                <?php endif; ?>
+
+                <h2 class="title">Artikelen:</h2>
+
+                <?php if (count($planningLines) === 0): ?>
+                    <div class="card empty">Geen artikelen gevonden voor deze werkorder.</div>
+                <?php else: ?>
+                    <section class="line-list">
+                        <?php foreach ($planningLines as $line): ?>
+                            <?php $lineStatus = material_line_status($line); ?>
+                            <?php $extendedText = trim((string) ($line['KVT_Extended_Text'] ?? '')); ?>
+                            <?php $lineNo = trim((string) ($line['No'] ?? '')); ?>
+                            <article class="card">
+                                <div class="row">
+                                    <div>
+                                        <p class="line-name"><?= bc_text_html((string) ($line['Description'] ?? '')) ?></p>
+                                        <p class="line-subtitle"><?= bc_text_html($lineNo !== '' ? $lineNo : '-') ?></p>
+                                    </div>
+                                    <span
+                                        class="badge <?= htmlspecialchars($lineStatus['class']) ?>"><?= htmlspecialchars(safe_text((string) ($lineStatus['material_status_label'] ?? 'Onbekend'))) ?></span>
                                 </div>
-                                <span
-                                    class="badge <?= htmlspecialchars($lineStatus['class']) ?>"><?= htmlspecialchars(safe_text((string) ($lineStatus['material_status_label'] ?? 'Onbekend'))) ?></span>
-                            </div>
-                            <div class="meta">
-                                Aantal: <?= htmlspecialchars((string) ($line['Quantity'] ?? '0')) ?>
-                                <?= bc_text_html((string) ($line['Unit_of_Measure_Code'] ?? ''), '') ?>
-                            </div>
-                            <?php if ($extendedText !== ''): ?>
-                                <div class="line-desc">
-                                    <?= bc_text_html($extendedText, '') ?>
+                                <div class="meta">
+                                    Aantal: <?= htmlspecialchars((string) ($line['Quantity'] ?? '0')) ?>
+                                    <?= bc_text_html((string) ($line['Unit_of_Measure_Code'] ?? ''), '') ?>
                                 </div>
-                            <?php endif; ?>
-                            <div class="status-material-label">
-                                Materiaalstatus:
-                                <?= htmlspecialchars(safe_text((string) ($lineStatus['material_status_label'] ?? 'Onbekend'))) ?>
-                            </div>
-                            <?php if (trim((string) ($lineStatus['detail'] ?? '')) !== ''): ?>
-                                <div class="status-detail"><?= htmlspecialchars((string) $lineStatus['detail']) ?></div>
-                            <?php endif; ?>
-                        </article>
-                    <?php endforeach; ?>
-                </section>
+                                <?php if ($extendedText !== ''): ?>
+                                    <div class="line-desc">
+                                        <?= bc_text_html($extendedText, '') ?>
+                                    </div>
+                                <?php endif; ?>
+                                <div class="status-material-label">
+                                    Materiaalstatus:
+                                    <?= htmlspecialchars(safe_text((string) ($lineStatus['material_status_label'] ?? 'Onbekend'))) ?>
+                                </div>
+                                <?php if (trim((string) ($lineStatus['detail'] ?? '')) !== ''): ?>
+                                    <div class="status-detail"><?= htmlspecialchars((string) $lineStatus['detail']) ?></div>
+                                <?php endif; ?>
+                            </article>
+                        <?php endforeach; ?>
+                    </section>
+                <?php endif; ?>
             <?php endif; ?>
+
+        <?php elseif ($selectedAssemblyOrder !== null): ?>
+            <section class="detail-head">
+                <a href="<?= htmlspecialchars($listHref) ?>" class="back" data-nav-link>← Terug naar overzicht</a>
+                <p class="wo-no-large"><?= bc_text_html((string) ($selectedAssemblyOrder['No'] ?? '')) ?></p>
+                <svg class="order-barcode" data-barcode-value="<?= htmlspecialchars((string) ($selectedAssemblyOrder['No'] ?? ''), ENT_QUOTES, 'UTF-8') ?>" aria-hidden="true"></svg>
+                <h1 class="title">
+                    <?= bc_text_html(assembly_order_title_text($selectedAssemblyOrder)) ?>
+                </h1>
+                <p class="subtitle">
+                    Startdatum: <?= htmlspecialchars(nl_date((string) ($selectedAssemblyOrder['Starting_Date'] ?? ''))) ?>
+                    · Einddatum: <?= htmlspecialchars(nl_date((string) ($selectedAssemblyOrder['Ending_Date'] ?? ''))) ?>
+                </p>
+                <div class="meta">
+                    <b>Artikelnummer</b>: <?= bc_text_html((string) ($selectedAssemblyOrder['Item_No'] ?? '-')) ?><br />
+                    <b>Te assembleren</b>:
+                    <?= htmlspecialchars(format_decimal_quantity_display($selectedAssemblyOrder['Remaining_Quantity'] ?? 0)) ?>
+                    <?= bc_text_html((string) ($selectedAssemblyOrder['Unit_of_Measure_Code'] ?? ''), '') ?><br />
+                    <b>Status</b>: <?= bc_text_html((string) ($selectedAssemblyOrder['Status'] ?? '-')) ?>
+                </div>
+            </section>
+
+            <h2 class="title">Regels:</h2>
+
+            <?php
+            $displayBlocks = $assemblyDisplayBlocks;
+            $incompleteArtikelKeys = $assemblyIncompleteArtikelKeys;
+            $emptyMessage = 'Geen regels gevonden voor deze assemblageorder.';
+            require __DIR__ . '/partials/assembly_style_line_list.php';
+            ?>
 
         <?php else: ?>
             <h1 class="title">Mijn werkorders</h1>
 
             <?php if ($selectedResourceNo === ''): ?>
                 <div class="card empty">Geen servicemonteur geselecteerd.</div>
-            <?php elseif (count($workOrders) === 0): ?>
-                <div class="card empty">Geen werkorders gevonden.</div>
+            <?php elseif (count($mergedOrderList) === 0): ?>
+                <div class="card empty"><?php
+                    if ($isDirectOrderSearch && is_array($directOrderSearch)) {
+                        echo 'Order ' . htmlspecialchars((string) ($directOrderSearch['no'] ?? ''), ENT_QUOTES, 'UTF-8') . ' niet gevonden.';
+                    } else {
+                        echo 'Geen werkorders of assemblageorders gevonden.';
+                    }
+                ?></div>
             <?php else: ?>
                 <section class="wo-list">
-                    <?php $previousWorkOrderDayKey = ''; ?>
-                    <?php foreach ($workOrders as $workOrder): ?>
+                    <?php $previousOrderDayKey = ''; ?>
+                    <?php foreach ($mergedOrderList as $listItem): ?>
                         <?php
-                        $workOrderHrefParams = $listQuery;
-                        $workOrderHrefParams['workorder'] = (string) ($workOrder['No'] ?? '');
-                        $workOrderHref = 'index.php?' . http_build_query($workOrderHrefParams, '', '&', PHP_QUERY_RFC3986);
-                        $workOrderStartDateRaw = (string) ($workOrder['Start_Date'] ?? '');
-                        $workOrderDayKey = workorder_day_key($workOrderStartDateRaw);
-                        if ($workOrderDayKey === '') {
-                            $workOrderDayKey = '__onbekend__';
+                        $listItemType = (string) ($listItem['type'] ?? '');
+                        $listItemData = is_array($listItem['data'] ?? null) ? $listItem['data'] : [];
+                        $listItemHrefParams = $listQuery;
+                        if ($listItemType === 'assembly') {
+                            $listItemHrefParams['assembly'] = (string) ($listItemData['No'] ?? '');
+                            $listItemStartDateRaw = assembly_order_list_date(
+                                $listItemData,
+                                $rangeStart,
+                                $rangeEnd,
+                                $today
+                            );
+                        } else {
+                            $listItemHrefParams['workorder'] = (string) ($listItemData['No'] ?? '');
+                            $listItemStartDateRaw = (string) ($listItemData['Start_Date'] ?? '');
                         }
-                        $showDaySeparator = $workOrderDayKey !== $previousWorkOrderDayKey;
+                        $listItemHref = 'index.php?' . http_build_query($listItemHrefParams, '', '&', PHP_QUERY_RFC3986);
+                        $orderDayKey = workorder_day_key($listItemStartDateRaw);
+                        if ($orderDayKey === '') {
+                            $orderDayKey = '__onbekend__';
+                        }
+                        $showDaySeparator = $orderDayKey !== $previousOrderDayKey;
                         if ($showDaySeparator) {
-                            $previousWorkOrderDayKey = $workOrderDayKey;
-                        }
-                        $workOrderNo = (string) ($workOrder['No'] ?? '');
-                        $realArticleCount = (int) ($workOrderRealArticleCounts[$workOrderNo] ?? 0);
-                        $workOrderStatusText = safe_text((string) ($workOrder['Status'] ?? ''));
-                        $workOrderStatusClass = status_css_class((string) ($workOrder['Status'] ?? ''));
-                        $workOrderBadgeClass = $workOrderStatusClass !== '' ? ('badge ' . $workOrderStatusClass) : 'badge neutral';
-                        $workOrderWebfleetStatusLabel = safe_text((string) ($workOrderWebfleetStatusLabels[$workOrderNo] ?? webfleet_default_status_label()));
-                        $workOrderWebfleetBadgeClass = 'badge ' . webfleet_status_badge_class($workOrderWebfleetStatusLabel);
-                        $workOrderMaterialStatusLabel = safe_text((string) ($workOrderMaterialStatusLabels[$workOrderNo] ?? 'Onbekend'));
-                        $workOrderMaterialBadgeClass = 'badge ' . workorder_material_badge_class($workOrderMaterialStatusLabel);
-                        $workOrderStartTime = format_workorder_time_value((string) ($workOrder['Start_Time'] ?? ''));
-                        $workOrderEndTime = format_workorder_time_value((string) ($workOrder['End_Time'] ?? ''));
-                        $workOrderTimeRangeText = '';
-                        if ($workOrderStartTime !== '' && $workOrderEndTime !== '') {
-                            $workOrderTimeRangeText = $workOrderStartTime . ' t/m ' . $workOrderEndTime;
-                        } elseif ($workOrderStartTime !== '') {
-                            $workOrderTimeRangeText = $workOrderStartTime;
-                        } elseif ($workOrderEndTime !== '') {
-                            $workOrderTimeRangeText = $workOrderEndTime;
+                            $previousOrderDayKey = $orderDayKey;
                         }
                         ?>
                         <?php if ($showDaySeparator): ?>
-                            <div class="wo-day-separator"><?= htmlspecialchars(workorder_day_separator_label($workOrderStartDateRaw)) ?>
+                            <div class="wo-day-separator"><?= htmlspecialchars(workorder_day_separator_label($listItemStartDateRaw)) ?>
                             </div>
                         <?php endif; ?>
-                        <a class="card" href="<?= htmlspecialchars($workOrderHref) ?>" data-nav-link>
-                            <div class="row">
-                                <div>
-                                    <p class="wo-no"><?= bc_text_html((string) ($workOrder['No'] ?? '')) ?>
-                                    </p>
-                                    <h2 class="wo-task">
-                                        <?= bc_text_html(workorder_task_text($workOrder)) ?>
-                                    </h2>
+                        <?php if ($listItemType === 'assembly'): ?>
+                            <?php
+                            $assemblyNo = (string) ($listItemData['No'] ?? '');
+                            $assemblyStatusText = safe_text((string) ($listItemData['Status'] ?? ''));
+                            $assemblyStatusClass = status_css_class((string) ($listItemData['Status'] ?? ''));
+                            $assemblyBadgeClass = $assemblyStatusClass !== '' ? ('badge ' . $assemblyStatusClass) : 'badge neutral';
+                            ?>
+                            <a class="card" href="<?= htmlspecialchars($listItemHref) ?>" data-nav-link>
+                                <div class="row">
+                                    <div>
+                                        <p class="wo-no"><?= bc_text_html($assemblyNo) ?></p>
+                                        <h2 class="wo-task">
+                                            <?= bc_text_html(assembly_order_title_text($listItemData)) ?>
+                                        </h2>
+                                    </div>
+                                    <div class="badge-stack">
+                                        <span class="badge neutral">Assemblage</span>
+                                        <span
+                                            class="<?= htmlspecialchars($assemblyBadgeClass) ?>"><?= htmlspecialchars($assemblyStatusText) ?></span>
+                                    </div>
                                 </div>
-                                <div class="badge-stack">
-                                    <span
-                                        class="<?= htmlspecialchars($workOrderWebfleetBadgeClass) ?>"><?= htmlspecialchars($workOrderWebfleetStatusLabel) ?></span>
-                                    <span
-                                        class="<?= htmlspecialchars($workOrderBadgeClass) ?>"><?= htmlspecialchars($workOrderStatusText) ?></span>
+                                <div class="meta">
+                                    <b>Startdatum</b>:
+                                    <?= htmlspecialchars(nl_date((string) ($listItemData['Starting_Date'] ?? ''))) ?>
+                                    · <b>Einddatum</b>:
+                                    <?= htmlspecialchars(nl_date((string) ($listItemData['Ending_Date'] ?? ''))) ?><br />
+                                    <b>Artikel</b>:
+                                    <?= bc_text_html((string) ($listItemData['Item_No'] ?? '-')) ?><br />
+                                    <b>Te assembleren</b>:
+                                    <?= htmlspecialchars(format_decimal_quantity_display($listItemData['Remaining_Quantity'] ?? 0)) ?>
+                                    <?= bc_text_html((string) ($listItemData['Unit_of_Measure_Code'] ?? ''), '') ?>
                                 </div>
-                            </div>
-                            <div class="meta">
-                                <b>Uitvoerdatum</b>:
-                                <?= htmlspecialchars(nl_date((string) ($workOrder['Start_Date'] ?? ''))) ?>
-                                <?php if ($workOrderTimeRangeText !== ''): ?>
-                                    · <?= htmlspecialchars($workOrderTimeRangeText) ?>
-                                <?php endif; ?><br />
-                                <?php if (is_all_resources_selection($selectedResourceNo)): ?>
-                                    <b>Monteur</b>:
-                                    <?= bc_text_html((string) ($workOrder['Resource_Name'] ?? '-')) ?><br />
-                                <?php endif; ?>
-                                <b>Object</b>:
-                                <?= bc_text_html((string) ($workOrder['Main_Entity_Description'] ?? '')) ?><br />
-                                <b>Component</b>:
-                                <?= bc_text_html((string) ($workOrder['Component_Description'] ?? '')) ?><br />
-                                <b>Materiaal nodig</b>: <?= htmlspecialchars(material_needed_text($realArticleCount)) ?><br />
-                                <?php if ($realArticleCount > 0): ?>
-                                    <b>Materiaalstatus</b>:
-                                    <span
-                                        class="<?= htmlspecialchars($workOrderMaterialBadgeClass) ?>"><?= htmlspecialchars($workOrderMaterialStatusLabel) ?></span>
-                                <?php endif; ?>
-                            </div>
-                        </a>
+                            </a>
+                        <?php else: ?>
+                            <?php
+                            $workOrder = $listItemData;
+                            $workOrderNo = (string) ($workOrder['No'] ?? '');
+                            $realArticleCount = (int) ($workOrderRealArticleCounts[$workOrderNo] ?? 0);
+                            $workOrderStatusText = safe_text((string) ($workOrder['Status'] ?? ''));
+                            $workOrderStatusClass = status_css_class((string) ($workOrder['Status'] ?? ''));
+                            $workOrderBadgeClass = $workOrderStatusClass !== '' ? ('badge ' . $workOrderStatusClass) : 'badge neutral';
+                            $workOrderWebfleetStatusLabel = safe_text((string) ($workOrderWebfleetStatusLabels[$workOrderNo] ?? webfleet_default_status_label()));
+                            $workOrderWebfleetBadgeClass = 'badge ' . webfleet_status_badge_class($workOrderWebfleetStatusLabel);
+                            $workOrderMaterialStatusLabel = safe_text((string) ($workOrderMaterialStatusLabels[$workOrderNo] ?? 'Onbekend'));
+                            $workOrderMaterialBadgeClass = 'badge ' . workorder_material_badge_class($workOrderMaterialStatusLabel);
+                            $workOrderStartTime = format_workorder_time_value((string) ($workOrder['Start_Time'] ?? ''));
+                            $workOrderEndTime = format_workorder_time_value((string) ($workOrder['End_Time'] ?? ''));
+                            $workOrderTimeRangeText = '';
+                            if ($workOrderStartTime !== '' && $workOrderEndTime !== '') {
+                                $workOrderTimeRangeText = $workOrderStartTime . ' t/m ' . $workOrderEndTime;
+                            } elseif ($workOrderStartTime !== '') {
+                                $workOrderTimeRangeText = $workOrderStartTime;
+                            } elseif ($workOrderEndTime !== '') {
+                                $workOrderTimeRangeText = $workOrderEndTime;
+                            }
+                            ?>
+                            <a class="card" href="<?= htmlspecialchars($listItemHref) ?>" data-nav-link>
+                                <div class="row">
+                                    <div>
+                                        <p class="wo-no"><?= bc_text_html((string) ($workOrder['No'] ?? '')) ?>
+                                        </p>
+                                        <h2 class="wo-task">
+                                            <?= bc_text_html(workorder_task_text($workOrder)) ?>
+                                        </h2>
+                                    </div>
+                                    <div class="badge-stack">
+                                        <span
+                                            class="<?= htmlspecialchars($workOrderWebfleetBadgeClass) ?>"><?= htmlspecialchars($workOrderWebfleetStatusLabel) ?></span>
+                                        <span
+                                            class="<?= htmlspecialchars($workOrderBadgeClass) ?>"><?= htmlspecialchars($workOrderStatusText) ?></span>
+                                    </div>
+                                </div>
+                                <div class="meta">
+                                    <b>Uitvoerdatum</b>:
+                                    <?= htmlspecialchars(nl_date((string) ($workOrder['Start_Date'] ?? ''))) ?>
+                                    <?php if ($workOrderTimeRangeText !== ''): ?>
+                                        · <?= htmlspecialchars($workOrderTimeRangeText) ?>
+                                    <?php endif; ?><br />
+                                    <?php if (is_all_resources_selection($selectedResourceNo)): ?>
+                                        <b>Monteur</b>:
+                                        <?= bc_text_html((string) ($workOrder['Resource_Name'] ?? '-')) ?><br />
+                                    <?php endif; ?>
+                                    <b>Object</b>:
+                                    <?= bc_text_html((string) ($workOrder['Main_Entity_Description'] ?? '')) ?><br />
+                                    <b>Component</b>:
+                                    <?= bc_text_html((string) ($workOrder['Component_Description'] ?? '')) ?><br />
+                                    <b>Materiaal nodig</b>: <?= htmlspecialchars(material_needed_text($realArticleCount)) ?><br />
+                                    <?php if ($realArticleCount > 0): ?>
+                                        <b>Materiaalstatus</b>:
+                                        <span
+                                            class="<?= htmlspecialchars($workOrderMaterialBadgeClass) ?>"><?= htmlspecialchars($workOrderMaterialStatusLabel) ?></span>
+                                    <?php endif; ?>
+                                </div>
+                            </a>
+                        <?php endif; ?>
                     <?php endforeach; ?>
                 </section>
             <?php endif; ?>
@@ -4859,6 +5868,35 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             }
         })();
     </script>
+    <?php if ($showDetailBarcode): ?>
+        <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+        <script>
+            (function ()
+            {
+                if (typeof JsBarcode !== 'function')
+                {
+                    return;
+                }
+
+                document.querySelectorAll('.order-barcode[data-barcode-value]').forEach(function (barcodeEl)
+                {
+                    const value = (barcodeEl.getAttribute('data-barcode-value') || '').trim();
+                    if (value === '')
+                    {
+                        return;
+                    }
+
+                    JsBarcode(barcodeEl, value, {
+                        format: 'CODE128',
+                        width: 2,
+                        height: 56,
+                        displayValue: false,
+                        margin: 0
+                    });
+                });
+            })();
+        </script>
+    <?php endif; ?>
     <script>
         if ('serviceWorker' in navigator)
         {

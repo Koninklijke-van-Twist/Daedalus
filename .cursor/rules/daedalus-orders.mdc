@@ -1,0 +1,47 @@
+---
+description: Daedalus werkorders, assemblageorders en gedeelde regelweergave
+globs: web/**
+alwaysApply: false
+---
+
+# Orders in Daedalus
+
+## Bronnen (BC OData)
+- Werkorders: `AppWerkorders`; regels standaard uit `LVS_JobPlanningLinesSub`.
+- Assemblageorders: kop `AssemblageKop`, regels `AssemblageRegels`.
+- Monteurkoppeling assemblage: `Assigned_User_ID` (`KVT\gebruiker`), match via `AppResource` (`KVT_User_ID`, `E_Mail`, `Time_Sheet_Owner_User_ID`, `Search_Name`).
+
+## Lijst en filters
+- Werkorders en assemblageorders in één lijst, gesorteerd op startdatum.
+- Assemblage datumfilter: overlap `Starting_Date`/`Ending_Date` met gekozen range (niet alleen startdatum).
+- Assemblage lijstpositie: valt de order volledig binnen de bekeken range (`Starting_Date` t/m `Ending_Date`), dan sorteren en dagscheiding op vandaag; is `Ending_Date` al verstreken, dan op einddatum.
+- Werkorder-statusfilters gelden niet voor assemblageorders.
+- **Directe orderzoekopdracht** (`q`): bij exact `ASS` + 7 cijfers, `WO` + 7 cijfers, of `40` + 5 cijfers → gerichte OData-lookup op ordernummer; datum, monteur, status- en webfleetfilters worden overgeslagen.
+
+## Barcode (Code-128)
+- **Assemblageorder**: altijd tonen onder ordernummer.
+- **Werkorder**: alleen bij `Task_Code === 'W_REV'`.
+- Geen barcode op overige werkorders.
+
+## Werkorder `W_REV` (revisie)
+- Zelfde regelweergave als assemblage via `web/partials/assembly_style_line_list.php`.
+- Alle planningregels ophalen (niet alleen artikelen), volgorde `Line_No asc`.
+- Mapping naar display-formaat: `map_planning_line_to_display_line()`; `Consumed_Quantity` valt terug op `KVT_Qty_Picked` tot BC velden levert.
+- Standaard werkorders: ongewijzigd (taakomschrijving + artikelen met materiaalstatus).
+
+## Assemblage / W_REV regelweergave
+- Alle regels in **één kaart** (`assembly-lines-card`); geen aparte kaart per regel.
+- **Instructie** (`Type: Resource`, `No: Instructie`): hoofdstuktitel = `Description`; extended/composite tekst in de inspringing; streepjeslijn vóór de regels eronder alleen als die tekst aanwezig is.
+- Opeenvolgende Instructies zonder extra tekst: descriptions samenvoegen onder eerste hoofdstuk.
+- Overige regels: ingesprongen met doorlopende verticale lijn links (`assembly-indented-lines`).
+- **Artikel** (compact): `Description` op regel 1; regel 2: `<No> - Verbruikt: x / y`; waarschuwing bij `Avail_Warning`. Elk artikel in eigen element (`assembly-line-artikel`).
+- **Resource**: bij `HR`: `Description: <aantal> uur` op één regel; overige tekst uit `KVT_Expanded_Description` + `KVT_Extended_Text` eronder.
+- Alle niet-volledig-verbruikte artikelregels: lichtblauwe pijl (`assembly-next-artikel`, `#d9ecff`) op dat artikelelement.
+
+## Print
+- `Terug naar overzicht` verbergen (`@media print`).
+- Pagina-einden: hele instructieblok (`assembly-chapter-group`, `break-inside: avoid`) bij voorkeur op één pagina; past het niet meer op de huidige pagina, dan splits vóór de instructie. Geen aparte splits tussen artikelen/resources.
+
+## Hergebruik
+- Display-blokken bouwen met `build_assembly_display_blocks()`.
+- Renderen via partial `assembly_style_line_list.php` met `$displayBlocks`, `$incompleteArtikelKeys`, `$emptyMessage`.

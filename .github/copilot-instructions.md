@@ -17,6 +17,7 @@
 - Gebruikerskoppeling loopt via `AppResource` (`E_Mail`) met fallback via `AppUserSetup` (`Email` -> `User_ID` -> `AppResource.KVT_User_ID`).
 - Werkorders komen uit `AppWerkorders`.
 - Detailregels komen uit `LVS_JobPlanningLinesSub` (functioneel: ProjectPlanningsRegels).
+- Assemblageorders: `AssemblageKop` / `AssemblageRegels`. Zie ook `.cursor/rules/daedalus-orders.mdc` voor barcode, `W_REV`, instructie-hoofdstukken en regelweergave.
 
 ## UI-regels
 - Geen desktop-first redesign toevoegen.
