@@ -2222,14 +2222,14 @@ function parse_direct_order_search(string $query): ?array
         return null;
     }
 
-    if (preg_match('/^ASS\d{6,7}$/', $normalized) === 1) {
+    if (preg_match('/^ASS\d{5,10}$/', $normalized) === 1) {
         return [
             'type' => 'assembly',
             'no' => $normalized,
         ];
     }
 
-    if (preg_match('/^WO\d{6,7}$/', $normalized) === 1) {
+    if (preg_match('/^WO\d{5,10}$/', $normalized) === 1) {
         return [
             'type' => 'workorder',
             'no' => $normalized,
