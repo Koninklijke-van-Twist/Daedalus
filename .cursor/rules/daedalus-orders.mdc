@@ -16,7 +16,7 @@ alwaysApply: false
 - Assemblage datumfilter: overlap `Starting_Date`/`Ending_Date` met gekozen range (niet alleen startdatum).
 - Assemblage lijstpositie: valt de order volledig binnen de bekeken range (`Starting_Date` t/m `Ending_Date`), dan sorteren en dagscheiding op vandaag; is `Ending_Date` al verstreken, dan op einddatum.
 - Werkorder-statusfilters gelden niet voor assemblageorders.
-- **Directe orderzoekopdracht** (`q`): bij exact `ASS` + 7 cijfers, `WO` + 7 cijfers, of `40` + 5 cijfers → gerichte OData-lookup op ordernummer; datum, monteur, status- en webfleetfilters worden overgeslagen.
+- **Directe orderzoekopdracht** (`q`): bij exact `ASS` + 6–7 cijfers, `WO` + 6–7 cijfers, of `40` + 5 cijfers → gerichte OData-lookup op ordernummer; datum, monteur, status- en webfleetfilters worden overgeslagen.
 
 ## Barcode (Code-128)
 - **Assemblageorder**: altijd tonen onder ordernummer.
