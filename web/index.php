@@ -3351,8 +3351,7 @@ try {
 }
 
 $isDetailView = $selectedWorkOrder !== null || $selectedAssemblyOrder !== null;
-$showDetailBarcode = $selectedAssemblyOrder !== null
-    || ($selectedWorkOrder !== null && $selectedWorkOrderIsRevision);
+$showDetailBarcode = $isDetailView;
 $title = $selectedWorkOrder !== null
     ? 'Werkorder details'
     : ($selectedAssemblyOrder !== null ? 'Assemblageorder details' : 'Mijn werkorders');
@@ -3701,6 +3700,14 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             font-weight: 700;
             color: var(--text);
             margin: 0 0 2px;
+        }
+
+        .wo-no-subtitle {
+            margin: 0 0 4px;
+            font-size: .95rem;
+            font-weight: 600;
+            color: var(--muted);
+            line-height: 1.3;
         }
 
         .order-barcode {
@@ -4793,9 +4800,11 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             <section class="detail-head">
                 <a href="<?= htmlspecialchars($listHref) ?>" class="back" data-nav-link>← Terug naar overzicht</a>
                 <p class="wo-no-large"><?= bc_text_html((string) ($selectedWorkOrder['No'] ?? '')) ?></p>
-                <?php if ($showDetailBarcode): ?>
-                    <svg class="order-barcode" data-barcode-value="<?= htmlspecialchars((string) ($selectedWorkOrder['No'] ?? ''), ENT_QUOTES, 'UTF-8') ?>" aria-hidden="true"></svg>
+                <?php $selectedWorkOrderJobNo = trim((string) ($selectedWorkOrder['Job_No'] ?? '')); ?>
+                <?php if ($selectedWorkOrderJobNo !== ''): ?>
+                    <p class="wo-no-subtitle"><?= bc_text_html($selectedWorkOrderJobNo) ?></p>
                 <?php endif; ?>
+                <svg class="order-barcode" data-barcode-value="<?= htmlspecialchars((string) ($selectedWorkOrder['No'] ?? ''), ENT_QUOTES, 'UTF-8') ?>" aria-hidden="true"></svg>
                 <h1 class="title">
                     <?= bc_text_html(workorder_task_text($selectedWorkOrder)) ?>
                 </h1>

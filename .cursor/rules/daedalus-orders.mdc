@@ -19,9 +19,10 @@ alwaysApply: false
 - **Directe orderzoekopdracht** (`q`): bij exact `ASS` + 5–10 cijfers, `WO` + 5–10 cijfers, of `40` + 5 cijfers → gerichte OData-lookup op ordernummer; datum, monteur, status- en webfleetfilters worden overgeslagen.
 
 ## Barcode (Code-128)
-- **Assemblageorder**: altijd tonen onder ordernummer.
-- **Werkorder**: alleen bij `Task_Code === 'W_REV'`.
-- Geen barcode op overige werkorders.
+- **Assemblageorder** en **werkorder**: altijd tonen onder ordernummer op de detailpagina.
+
+## Werkorder detail
+- Onder het werkordernummer: `Job_No` als ondertitel (`wo-no-subtitle`) indien aanwezig.
 
 ## Werkorder `W_REV` (revisie)
 - Zelfde regelweergave als assemblage via `web/partials/assembly_style_line_list.php`.
