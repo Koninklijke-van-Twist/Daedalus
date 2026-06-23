@@ -12,9 +12,10 @@ alwaysApply: false
 - Monteurkoppeling assemblage: `Assigned_User_ID` (`KVT\gebruiker`), match via `AppResource` (`KVT_User_ID`, `E_Mail`, `Time_Sheet_Owner_User_ID`, `Search_Name`).
 
 ## Lijst en filters
-- Werkorders en assemblageorders in één lijst, gesorteerd op startdatum.
+- Werkorders en assemblageorders in één lijst, gesorteerd op effectieve lijstdatum.
 - Assemblage datumfilter: overlap `Starting_Date`/`Ending_Date` met gekozen range (niet alleen startdatum).
 - Assemblage lijstpositie: valt de order volledig binnen de bekeken range (`Starting_Date` t/m `Ending_Date`), dan sorteren en dagscheiding op vandaag; is `Ending_Date` al verstreken, dan op einddatum.
+- Werkorder lijstpositie: zelfde logica met `Start_Date`/`End_Date`.
 - Werkorder-statusfilters gelden niet voor assemblageorders.
 - **Directe orderzoekopdracht** (`q`): bij exact `ASS` + 5–10 cijfers, `WO` + 5–10 cijfers, of `40` + 5 cijfers → gerichte OData-lookup op ordernummer; datum, monteur, status- en webfleetfilters worden overgeslagen.
 
