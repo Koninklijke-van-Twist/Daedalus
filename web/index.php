@@ -1994,7 +1994,7 @@ function fetch_app_workorders_chunked(
         $filter = implode(' and ', $filterParts);
 
         $url = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
+            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
             '$filter' => $filter,
             '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
         ]);
@@ -2017,16 +2017,162 @@ function fetch_app_workorders_chunked(
     return $allRows;
 }
 
-function workorder_matches_query(array $workOrder, string $searchQuery): bool
+function append_search_blob_term(string $blob, string $term): string
+{
+    $normalizedTerm = strtolower(trim($term));
+    if ($normalizedTerm === '') {
+        return $blob;
+    }
+
+    if ($blob === '') {
+        return $normalizedTerm;
+    }
+
+    return $blob . ' ' . $normalizedTerm;
+}
+
+function search_text_matches_needle(string $needle, array $haystacks): bool
+{
+    if ($needle === '') {
+        return true;
+    }
+
+    foreach ($haystacks as $haystack) {
+        $normalizedHaystack = strtolower(trim((string) $haystack));
+        if ($normalizedHaystack !== '' && strpos($normalizedHaystack, $needle) !== false) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function fetch_workorder_article_search_blobs(
+    string $environment,
+    string $company,
+    array $workOrderNos,
+    array $auth
+): array {
+    $blobs = [];
+    $normalizedNos = [];
+    foreach ($workOrderNos as $workOrderNo) {
+        $value = trim((string) $workOrderNo);
+        if ($value === '') {
+            continue;
+        }
+
+        $normalizedNos[$value] = true;
+        $blobs[$value] = '';
+    }
+
+    $uniqueNos = array_keys($normalizedNos);
+    if (empty($uniqueNos)) {
+        return $blobs;
+    }
+
+    foreach (array_chunk($uniqueNos, 20) as $chunkNos) {
+        $filter = build_or_filter('LVS_Work_Order_No', $chunkNos);
+        if ($filter === '') {
+            continue;
+        }
+
+        $url = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
+            '$select' => 'LVS_Work_Order_No,Type,No,Description',
+            '$filter' => $filter,
+        ]);
+
+        $rows = odata_get_all($url, $auth, odata_ttl('planning_lines'));
+        foreach ($rows as $row) {
+            $type = strtolower(trim((string) ($row['Type'] ?? '')));
+            if ($type !== 'item' && $type !== 'artikel') {
+                continue;
+            }
+
+            $workOrderNo = trim((string) ($row['LVS_Work_Order_No'] ?? ''));
+            if ($workOrderNo === '' || !array_key_exists($workOrderNo, $blobs)) {
+                continue;
+            }
+
+            $blobs[$workOrderNo] = append_search_blob_term($blobs[$workOrderNo], (string) ($row['No'] ?? ''));
+            $blobs[$workOrderNo] = append_search_blob_term($blobs[$workOrderNo], (string) ($row['Description'] ?? ''));
+        }
+    }
+
+    return $blobs;
+}
+
+function fetch_assembly_line_search_blobs(
+    string $environment,
+    string $company,
+    array $assemblyNos,
+    array $auth
+): array {
+    $blobs = [];
+    $normalizedNos = [];
+    foreach ($assemblyNos as $assemblyNo) {
+        $value = trim((string) $assemblyNo);
+        if ($value === '') {
+            continue;
+        }
+
+        $normalizedNos[$value] = true;
+        $blobs[$value] = '';
+    }
+
+    $uniqueNos = array_keys($normalizedNos);
+    if (empty($uniqueNos)) {
+        return $blobs;
+    }
+
+    foreach (array_chunk($uniqueNos, 20) as $chunkNos) {
+        $filter = build_or_filter('Document_No', $chunkNos);
+        if ($filter === '') {
+            continue;
+        }
+
+        $url = odata_company_url($environment, $company, 'AssemblageRegels', [
+            '$select' => 'Document_No,Type,No,Description',
+            '$filter' => $filter,
+        ]);
+
+        $rows = odata_get_all($url, $auth, odata_ttl('assembly_lines'));
+        foreach ($rows as $row) {
+            $assemblyNo = trim((string) ($row['Document_No'] ?? ''));
+            if ($assemblyNo === '' || !array_key_exists($assemblyNo, $blobs)) {
+                continue;
+            }
+
+            $blobs[$assemblyNo] = append_search_blob_term($blobs[$assemblyNo], (string) ($row['No'] ?? ''));
+            $blobs[$assemblyNo] = append_search_blob_term($blobs[$assemblyNo], (string) ($row['Description'] ?? ''));
+        }
+    }
+
+    return $blobs;
+}
+
+function workorder_matches_query(array $workOrder, string $searchQuery, string $articleSearchBlob = ''): bool
 {
     $needle = strtolower(trim($searchQuery));
     if ($needle === '') {
         return true;
     }
 
-    $workOrderNo = strtolower((string) ($workOrder['No'] ?? ''));
-    $taskDescription = strtolower((string) ($workOrder['Task_Description'] ?? ''));
-    return strpos($workOrderNo, $needle) !== false || strpos($taskDescription, $needle) !== false;
+    $haystacks = [
+        (string) ($workOrder['No'] ?? ''),
+        (string) ($workOrder['Task_Description'] ?? ''),
+        (string) ($workOrder['Task_Code'] ?? ''),
+        (string) ($workOrder['Component_No'] ?? ''),
+        (string) ($workOrder['Component_Description'] ?? ''),
+        (string) ($workOrder['Main_Entity_Description'] ?? ''),
+        (string) ($workOrder['Sub_Entity_Description'] ?? ''),
+        (string) ($workOrder['Serial_No'] ?? ''),
+        (string) ($workOrder['External_Document_No'] ?? ''),
+        (string) ($workOrder['Job_No'] ?? ''),
+        (string) ($workOrder['Resource_Name'] ?? ''),
+        $articleSearchBlob,
+    ];
+
+    return search_text_matches_needle($needle, $haystacks);
 }
 
 function assigned_user_id_name_fallback_values(array $resourceRow): array
@@ -2246,19 +2392,22 @@ function assembly_order_title_text(array $assemblyOrder): string
     return $itemNo !== '' ? $itemNo : '-';
 }
 
-function assembly_matches_query(array $assemblyOrder, string $searchQuery): bool
+function assembly_matches_query(array $assemblyOrder, string $searchQuery, string $lineSearchBlob = ''): bool
 {
     $needle = strtolower(trim($searchQuery));
     if ($needle === '') {
         return true;
     }
 
-    $assemblyNo = strtolower((string) ($assemblyOrder['No'] ?? ''));
-    $description = strtolower((string) ($assemblyOrder['Description'] ?? ''));
-    $itemNo = strtolower((string) ($assemblyOrder['Item_No'] ?? ''));
-    return strpos($assemblyNo, $needle) !== false
-        || strpos($description, $needle) !== false
-        || strpos($itemNo, $needle) !== false;
+    $haystacks = [
+        (string) ($assemblyOrder['No'] ?? ''),
+        (string) ($assemblyOrder['Description'] ?? ''),
+        (string) ($assemblyOrder['Description_2'] ?? ''),
+        (string) ($assemblyOrder['Item_No'] ?? ''),
+        $lineSearchBlob,
+    ];
+
+    return search_text_matches_needle($needle, $haystacks);
 }
 
 function parse_direct_order_search(string $query): ?array
@@ -2307,7 +2456,7 @@ function fetch_app_workorder_list_row_by_no(
         $environment,
         $company,
         'AppWerkorders',
-        'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
+        'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
         "No eq '" . odata_quote_string($normalizedWorkOrderNo) . "'",
         $auth,
         odata_ttl('workorder_detail')
@@ -3050,11 +3199,44 @@ try {
             );
         }
 
+        $workOrderArticleSearchBlobs = [];
+        $assemblyLineSearchBlobs = [];
+        if ($searchQuery !== '') {
+            $workOrderNosForSearch = array_values(array_filter(array_map(
+                static fn(array $workOrder): string => trim((string) ($workOrder['No'] ?? '')),
+                $workOrders
+            )));
+            $workOrderArticleSearchBlobs = fetch_workorder_article_search_blobs(
+                $environment,
+                $company,
+                $workOrderNosForSearch,
+                $auth
+            );
+
+            $assemblyNosForSearch = array_values(array_filter(array_map(
+                static fn(array $assemblyOrder): string => trim((string) ($assemblyOrder['No'] ?? '')),
+                $assemblyOrders
+            )));
+            $assemblyLineSearchBlobs = fetch_assembly_line_search_blobs(
+                $environment,
+                $company,
+                $assemblyNosForSearch,
+                $auth
+            );
+        }
+
         $workOrdersForExtraStatusCounts = $workOrders;
         if ($searchQuery !== '') {
             $workOrdersForExtraStatusCounts = array_values(array_filter(
                 $workOrdersForExtraStatusCounts,
-                static fn(array $workOrder): bool => workorder_matches_query($workOrder, $searchQuery)
+                static function (array $workOrder) use ($searchQuery, $workOrderArticleSearchBlobs): bool {
+                    $workOrderNo = trim((string) ($workOrder['No'] ?? ''));
+                    return workorder_matches_query(
+                        $workOrder,
+                        $searchQuery,
+                        (string) ($workOrderArticleSearchBlobs[$workOrderNo] ?? '')
+                    );
+                }
             ));
         }
 
@@ -3166,11 +3348,25 @@ try {
         if ($searchQuery !== '') {
             $workOrders = array_values(array_filter(
                 $workOrders,
-                static fn(array $workOrder): bool => workorder_matches_query($workOrder, $searchQuery)
+                static function (array $workOrder) use ($searchQuery, $workOrderArticleSearchBlobs): bool {
+                    $workOrderNo = trim((string) ($workOrder['No'] ?? ''));
+                    return workorder_matches_query(
+                        $workOrder,
+                        $searchQuery,
+                        (string) ($workOrderArticleSearchBlobs[$workOrderNo] ?? '')
+                    );
+                }
             ));
             $assemblyOrders = array_values(array_filter(
                 $assemblyOrders,
-                static fn(array $assemblyOrder): bool => assembly_matches_query($assemblyOrder, $searchQuery)
+                static function (array $assemblyOrder) use ($searchQuery, $assemblyLineSearchBlobs): bool {
+                    $assemblyNo = trim((string) ($assemblyOrder['No'] ?? ''));
+                    return assembly_matches_query(
+                        $assemblyOrder,
+                        $searchQuery,
+                        (string) ($assemblyLineSearchBlobs[$assemblyNo] ?? '')
+                    );
+                }
             ));
         }
 
@@ -4700,9 +4896,9 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                 </div>
             </div>
             <div class="field">
-                <label for="q">Zoeken op werkorder, assemblage of omschrijving</label>
+                <label for="q">Zoeken</label>
                 <input id="q" name="q" type="search" value="<?= htmlspecialchars($searchQuery) ?>"
-                    placeholder="Bijv. WO-123, AO-456 of onderhoud" />
+                    placeholder="Zoek op werkordernummer" data-search-placeholder-rotate="1" />
             </div>
             <div class="actions">
                 <button id="open-status-filter" class="status-filter-trigger" type="button">Statusfilter</button>
@@ -5567,6 +5763,19 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             const dateFromEl = document.getElementById('date_from');
             const dateToEl = document.getElementById('date_to');
             const searchInputEl = document.getElementById('q');
+            const searchPlaceholders = [
+                'Zoek op werkordernummer',
+                'Zoek op assemblagenummer',
+                'Zoek op componentnummer',
+                'Zoek op componentnaam',
+                'Zoek op omschrijving',
+                'Zoek op artikelnummer',
+                'Zoek op artikelnaam',
+                'Zoek op projectnummer',
+                'Zoek op serienummer',
+                'Zoek op object',
+            ];
+            let searchPlaceholderIndex = 0;
             const applyFiltersButtonEl = document.getElementById('apply-filters-button');
             const pickDayButtonEl = document.getElementById('pick-day');
             const dayPickerInputEl = document.getElementById('date_day');
@@ -5588,6 +5797,28 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             const statusCloseEls = Array.from(document.querySelectorAll('[data-status-close]'));
             const emailCloseEls = Array.from(document.querySelectorAll('[data-email-close]'));
             let searchApplyHintTimeoutId = 0;
+
+            function rotateSearchPlaceholder ()
+            {
+                if (!searchInputEl || searchPlaceholders.length === 0)
+                {
+                    return;
+                }
+
+                if (searchInputEl.value.trim() !== '')
+                {
+                    return;
+                }
+
+                searchPlaceholderIndex = (searchPlaceholderIndex + 1) % searchPlaceholders.length;
+                searchInputEl.placeholder = searchPlaceholders[searchPlaceholderIndex];
+            }
+
+            if (searchInputEl && searchInputEl.dataset.searchPlaceholderRotate === '1' && searchPlaceholders.length > 0)
+            {
+                searchInputEl.placeholder = searchPlaceholders[0];
+                window.setInterval(rotateSearchPlaceholder, 1000);
+            }
 
             function nudgeApplyButton ()
             {
