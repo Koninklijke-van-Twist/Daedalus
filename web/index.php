@@ -742,13 +742,9 @@ function build_or_filter(string $field, array $values): string
     return '(' . implode(' or ', $parts) . ')';
 }
 
-function workorder_sort_key(
-    array $row,
-    DateTimeImmutable $rangeStart,
-    DateTimeImmutable $rangeEnd,
-    DateTimeImmutable $today
-): string {
-    $date = workorder_list_date($row, $rangeStart, $rangeEnd, $today);
+function workorder_sort_key(array $row): string
+{
+    $date = trim((string) ($row['Start_Date'] ?? ''));
     $time = format_workorder_time_value((string) ($row['Start_Time'] ?? ''));
 
     if ($date === '') {
@@ -760,48 +756,6 @@ function workorder_sort_key(
     }
 
     return $date . '|' . $time;
-}
-
-function workorder_date_bounds(array $row): array
-{
-    $orderStart = parse_date_ymd(substr(trim((string) ($row['Start_Date'] ?? '')), 0, 10));
-    if (!($orderStart instanceof DateTimeImmutable)) {
-        return [null, null];
-    }
-
-    $orderEnd = parse_date_ymd(substr(trim((string) ($row['End_Date'] ?? '')), 0, 10));
-    if (!($orderEnd instanceof DateTimeImmutable)) {
-        $orderEnd = $orderStart;
-    }
-
-    if ($orderEnd < $orderStart) {
-        $orderEnd = $orderStart;
-    }
-
-    return [$orderStart, $orderEnd];
-}
-
-function workorder_list_date(
-    array $row,
-    DateTimeImmutable $rangeStart,
-    DateTimeImmutable $rangeEnd,
-    DateTimeImmutable $today
-): string {
-    [$orderStart, $orderEnd] = workorder_date_bounds($row);
-    if (!($orderStart instanceof DateTimeImmutable) || !($orderEnd instanceof DateTimeImmutable)) {
-        $fallback = substr(trim((string) ($row['Start_Date'] ?? '')), 0, 10);
-        return $fallback !== '' ? $fallback : '';
-    }
-
-    if ($orderStart >= $rangeStart && $orderEnd <= $rangeEnd) {
-        if ($orderEnd < $today) {
-            return $orderEnd->format('Y-m-d');
-        }
-
-        return $today->format('Y-m-d');
-    }
-
-    return $orderStart->format('Y-m-d');
 }
 
 function material_status_label(string $status): string
@@ -2611,7 +2565,7 @@ function merge_orders_by_date(
         $items[] = [
             'type' => 'workorder',
             'data' => $workOrder,
-            'sort_key' => workorder_sort_key($workOrder, $rangeStart, $rangeEnd, $today),
+            'sort_key' => workorder_sort_key($workOrder),
         ];
     }
     foreach ($assemblyOrders as $assemblyOrder) {
@@ -3370,11 +3324,8 @@ try {
             ));
         }
 
-        usort($workOrders, static function (array $left, array $right) use ($workOrderWebfleetStatusLabels, $rangeStart, $rangeEnd, $today): int {
-            $dateTimeCompare = strcmp(
-                workorder_sort_key($left, $rangeStart, $rangeEnd, $today),
-                workorder_sort_key($right, $rangeStart, $rangeEnd, $today)
-            );
+        usort($workOrders, static function (array $left, array $right) use ($workOrderWebfleetStatusLabels): int {
+            $dateTimeCompare = strcmp(workorder_sort_key($left), workorder_sort_key($right));
             if ($dateTimeCompare !== 0) {
                 return $dateTimeCompare;
             }
@@ -5262,12 +5213,7 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                             );
                         } else {
                             $listItemHrefParams['workorder'] = (string) ($listItemData['No'] ?? '');
-                            $listItemStartDateRaw = workorder_list_date(
-                                $listItemData,
-                                $rangeStart,
-                                $rangeEnd,
-                                $today
-                            );
+                            $listItemStartDateRaw = (string) ($listItemData['Start_Date'] ?? '');
                         }
                         $listItemHref = 'index.php?' . http_build_query($listItemHrefParams, '', '&', PHP_QUERY_RFC3986);
                         $orderDayKey = workorder_day_key($listItemStartDateRaw);
