@@ -519,6 +519,235 @@ function workorder_day_separator_label(string $value): string
     return trim($weekday . ' ' . $formattedDate);
 }
 
+function monday_of_iso_week(DateTimeImmutable $date): DateTimeImmutable
+{
+    $normalized = $date->setTime(0, 0);
+    $weekday = (int) $normalized->format('N');
+    if ($weekday === 1) {
+        return $normalized;
+    }
+
+    return $normalized->modify('-' . ($weekday - 1) . ' days');
+}
+
+function nl_month_name(int $month): string
+{
+    $months = [
+        1 => 'januari',
+        2 => 'februari',
+        3 => 'maart',
+        4 => 'april',
+        5 => 'mei',
+        6 => 'juni',
+        7 => 'juli',
+        8 => 'augustus',
+        9 => 'september',
+        10 => 'oktober',
+        11 => 'november',
+        12 => 'december',
+    ];
+
+    return (string) ($months[$month] ?? '');
+}
+
+function nl_month_name_short(int $month): string
+{
+    $months = [
+        1 => 'jan',
+        2 => 'feb',
+        3 => 'mrt',
+        4 => 'apr',
+        5 => 'mei',
+        6 => 'jun',
+        7 => 'jul',
+        8 => 'aug',
+        9 => 'sep',
+        10 => 'okt',
+        11 => 'nov',
+        12 => 'dec',
+    ];
+
+    return (string) ($months[$month] ?? '');
+}
+
+function nl_weekday_short(int $weekday): string
+{
+    $weekdays = [
+        1 => 'ma',
+        2 => 'di',
+        3 => 'wo',
+        4 => 'do',
+        5 => 'vr',
+        6 => 'za',
+        7 => 'zo',
+    ];
+
+    return (string) ($weekdays[$weekday] ?? '');
+}
+
+function week_calendar_range_label(DateTimeImmutable $weekStart, DateTimeImmutable $weekEnd): string
+{
+    $startDay = (int) $weekStart->format('j');
+    $endDay = (int) $weekEnd->format('j');
+    $startMonth = nl_month_name((int) $weekStart->format('n'));
+    $endMonth = nl_month_name((int) $weekEnd->format('n'));
+    $startYear = $weekStart->format('Y');
+    $endYear = $weekEnd->format('Y');
+
+    if ($startYear === $endYear && $startMonth === $endMonth) {
+        return $startDay . '–' . $endDay . ' ' . $startMonth . ' ' . $startYear;
+    }
+
+    if ($startYear === $endYear) {
+        return $startDay . ' ' . $startMonth . ' – ' . $endDay . ' ' . $endMonth . ' ' . $startYear;
+    }
+
+    return $startDay . ' ' . $startMonth . ' ' . $startYear . ' – ' . $endDay . ' ' . $endMonth . ' ' . $endYear;
+}
+
+function week_calendar_range_label_short(DateTimeImmutable $weekStart, DateTimeImmutable $weekEnd): string
+{
+    $startDay = (int) $weekStart->format('j');
+    $endDay = (int) $weekEnd->format('j');
+    $startMonth = nl_month_name_short((int) $weekStart->format('n'));
+    $endMonth = nl_month_name_short((int) $weekEnd->format('n'));
+    $startYear = $weekStart->format('Y');
+    $endYear = $weekEnd->format('Y');
+
+    if ($startYear === $endYear && $startMonth === $endMonth) {
+        return $startDay . '–' . $endDay . ' ' . $startMonth;
+    }
+
+    if ($startYear === $endYear) {
+        return $startDay . ' ' . $startMonth . ' – ' . $endDay . ' ' . $endMonth;
+    }
+
+    return $startDay . ' ' . $startMonth . ' ’' . substr($startYear, -2) . ' – ' . $endDay . ' ' . $endMonth . ' ’' . substr($endYear, -2);
+}
+
+function workorder_hhmm_to_minutes(string $time): ?int
+{
+    if (preg_match('/^(\d{1,2}):(\d{2})$/', trim($time), $matches) !== 1) {
+        return null;
+    }
+
+    $hours = (int) $matches[1];
+    $minutes = (int) $matches[2];
+    if ($hours < 0 || $hours > 23 || $minutes < 0 || $minutes > 59) {
+        return null;
+    }
+
+    return ($hours * 60) + $minutes;
+}
+
+function minutes_to_hhmm(int $minutes): string
+{
+    $clamped = max(0, min((24 * 60) - 1, $minutes));
+
+    return sprintf('%02d:%02d', intdiv($clamped, 60), $clamped % 60);
+}
+
+function map_workorder_for_week_calendar(array $workOrder, array $hrefBaseQuery): array
+{
+    $no = trim((string) ($workOrder['No'] ?? ''));
+    $startTime = format_workorder_time_value((string) ($workOrder['Start_Time'] ?? ''));
+    $endTime = format_workorder_time_value((string) ($workOrder['End_Time'] ?? ''));
+    $startMinutes = workorder_hhmm_to_minutes($startTime);
+    $endMinutes = workorder_hhmm_to_minutes($endTime);
+    $allDay = $startMinutes === null && $endMinutes === null;
+
+    if (!$allDay) {
+        if ($startMinutes === null && $endMinutes !== null) {
+            $startMinutes = max(0, $endMinutes - 60);
+            $startTime = minutes_to_hhmm($startMinutes);
+        }
+
+        if ($endMinutes === null && $startMinutes !== null) {
+            $endMinutes = min(24 * 60, $startMinutes + 60);
+            $endTime = $endMinutes >= (24 * 60) ? '24:00' : minutes_to_hhmm($endMinutes);
+        }
+
+        if ($startMinutes !== null && $endMinutes !== null && $endMinutes <= $startMinutes) {
+            $endMinutes = min(24 * 60, $startMinutes + 60);
+            $endTime = $endMinutes >= (24 * 60) ? '24:00' : minutes_to_hhmm($endMinutes);
+        }
+    }
+
+    $hrefQuery = $hrefBaseQuery;
+    if ($no !== '') {
+        $hrefQuery['workorder'] = $no;
+    }
+
+    $status = safe_text((string) ($workOrder['Status'] ?? ''), '');
+
+    return [
+        'no' => $no,
+        'title' => workorder_task_text($workOrder),
+        'object' => trim((string) ($workOrder['Main_Entity_Description'] ?? '')),
+        'start_time' => $startTime,
+        'end_time' => $endTime,
+        'start_minutes' => $startMinutes,
+        'end_minutes' => $endMinutes,
+        'all_day' => $allDay,
+        'status' => $status,
+        'status_class' => status_css_class($status),
+        'href' => 'index.php?' . http_build_query($hrefQuery, '', '&', PHP_QUERY_RFC3986),
+    ];
+}
+
+function build_week_calendar_payload(
+    string $environment,
+    string $company,
+    string $resourceNo,
+    DateTimeImmutable $weekStart,
+    DateTimeImmutable $weekEnd,
+    array $auth,
+    array $hrefBaseQuery
+): array {
+    $today = (new DateTimeImmutable('today'))->format('Y-m-d');
+    $workOrders = fetch_app_workorders_chunked(
+        $environment,
+        $company,
+        $resourceNo,
+        $weekStart,
+        $weekEnd,
+        $auth
+    );
+
+    $days = [];
+    for ($offset = 0; $offset < 7; $offset++) {
+        $day = $weekStart->modify('+' . $offset . ' days');
+        $dateKey = $day->format('Y-m-d');
+        $weekdayIndex = (int) $day->format('N');
+        $days[$dateKey] = [
+            'date' => $dateKey,
+            'weekday' => nl_weekday_short($weekdayIndex),
+            'day' => (int) $day->format('j'),
+            'is_today' => $dateKey === $today,
+            'is_weekend' => $weekdayIndex >= 6,
+            'workorders' => [],
+        ];
+    }
+
+    foreach ($workOrders as $workOrder) {
+        $dayKey = workorder_day_key((string) ($workOrder['Start_Date'] ?? ''));
+        if ($dayKey === '' || !isset($days[$dayKey])) {
+            continue;
+        }
+
+        $days[$dayKey]['workorders'][] = map_workorder_for_week_calendar($workOrder, $hrefBaseQuery);
+    }
+
+    return [
+        'ok' => true,
+        'week_start' => $weekStart->format('Y-m-d'),
+        'week_end' => $weekEnd->format('Y-m-d'),
+        'week_label' => week_calendar_range_label($weekStart, $weekEnd),
+        'week_label_short' => week_calendar_range_label_short($weekStart, $weekEnd),
+        'days' => array_values($days),
+    ];
+}
+
 function country_calling_code(string $countryCode): string
 {
     $code = strtoupper(trim($countryCode));
@@ -2951,6 +3180,64 @@ if ($ajaxAction === 'resource_counts') {
     exit;
 }
 
+if ($ajaxAction === 'week_calendar') {
+    header('Content-Type: application/json; charset=utf-8');
+
+    $calendarResourceNo = trim((string) ($_GET['person'] ?? ''));
+    if ($calendarResourceNo === '' || is_all_resources_selection($calendarResourceNo)) {
+        http_response_code(400);
+        echo json_encode([
+            'ok' => false,
+            'error' => 'Selecteer een servicemonteur om de weekkalender te tonen.',
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    $weekRequest = trim((string) ($_GET['week'] ?? ''));
+    $weekDate = parse_date_ymd($weekRequest) ?? new DateTimeImmutable('today');
+    $weekStart = monday_of_iso_week($weekDate);
+    $weekEnd = $weekStart->modify('+6 days');
+
+    $hrefBaseQuery = [
+        'company' => $company,
+        'person' => $calendarResourceNo,
+    ];
+    $hrefDateFrom = trim((string) ($_GET['date_from'] ?? ''));
+    $hrefDateTo = trim((string) ($_GET['date_to'] ?? ''));
+    $hrefSearch = trim((string) ($_GET['q'] ?? ''));
+    if ($hrefDateFrom !== '') {
+        $hrefBaseQuery['date_from'] = $hrefDateFrom;
+    }
+    if ($hrefDateTo !== '') {
+        $hrefBaseQuery['date_to'] = $hrefDateTo;
+    }
+    if ($hrefSearch !== '') {
+        $hrefBaseQuery['q'] = $hrefSearch;
+    }
+
+    try {
+        echo json_encode(
+            build_week_calendar_payload(
+                $environment,
+                $company,
+                $calendarResourceNo,
+                $weekStart,
+                $weekEnd,
+                $auth,
+                $hrefBaseQuery
+            ),
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+        );
+    } catch (Throwable $throwable) {
+        http_response_code(500);
+        echo json_encode([
+            'ok' => false,
+            'error' => 'Kon weekkalender niet laden.',
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+    exit;
+}
+
 try {
     $resourcesForUser = fetch_app_resources_by_email($environment, $company, $userEmail, $auth);
 
@@ -3568,6 +3855,12 @@ $listHref = 'index.php' . (!empty($listQuery) ? ('?' . http_build_query($listQue
 $resourceCountsUrl = 'index.php?' . http_build_query([
     'ajax' => 'resource_counts',
     'company' => $company,
+], '', '&', PHP_QUERY_RFC3986);
+$showWeekCalendarButton = $selectedResourceNo !== '' && !is_all_resources_selection($selectedResourceNo);
+$weekCalendarUrl = 'index.php?' . http_build_query([
+    'ajax' => 'week_calendar',
+    'company' => $company,
+    'person' => $selectedResourceNo,
 ], '', '&', PHP_QUERY_RFC3986);
 
 $statusFiltersForModal = [];
@@ -4193,6 +4486,12 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             background: #f7f9fb;
         }
 
+        .icon-button svg {
+            display: block;
+            width: 20px;
+            height: 20px;
+        }
+
         .toolbar .actions {
             display: flex;
             justify-content: flex-end;
@@ -4521,6 +4820,453 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             gap: 8px;
         }
 
+        body.week-calendar-open {
+            overflow: hidden;
+        }
+
+        .week-calendar-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 4400;
+            display: grid;
+            padding: 0;
+        }
+
+        .week-calendar-modal[hidden] {
+            display: none;
+        }
+
+        .week-calendar-modal-backdrop {
+            display: none;
+        }
+
+        .week-calendar-modal-card {
+            position: relative;
+            z-index: 1;
+            width: 100%;
+            height: 100%;
+            height: 100dvh;
+            max-height: 100dvh;
+            background: var(--card);
+            border: 0;
+            border-radius: 0;
+            padding: max(8px, env(safe-area-inset-top, 0px)) 10px max(10px, env(safe-area-inset-bottom, 0px));
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .week-calendar-header {
+            margin-bottom: 8px;
+            flex: 0 0 auto;
+        }
+
+        .week-calendar-nav {
+            display: grid;
+            grid-template-columns: 42px minmax(0, 1fr) 42px 42px;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .week-calendar-heading {
+            min-width: 0;
+            text-align: center;
+        }
+
+        .week-calendar-title {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        .week-calendar-label {
+            display: block;
+            font-size: .95rem;
+            font-weight: 700;
+            line-height: 1.25;
+        }
+
+        .week-calendar-subtitle {
+            margin: 2px 0 0;
+            color: var(--muted);
+            font-size: .78rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .week-calendar-strip {
+            display: grid;
+            grid-template-columns: repeat(7, minmax(0, 1fr));
+            gap: 4px;
+            margin-bottom: 8px;
+            flex: 0 0 auto;
+        }
+
+        .week-calendar-strip:empty {
+            display: none;
+        }
+
+        .week-calendar-strip-day {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 2px;
+            min-height: 52px;
+            padding: 4px 2px;
+            border: 0;
+            border-radius: 12px;
+            background: transparent;
+            color: var(--text);
+            cursor: pointer;
+        }
+
+        .week-calendar-strip-day.is-weekend {
+            color: var(--muted);
+        }
+
+        .week-calendar-strip-day.is-selected {
+            background: #e8f1fb;
+        }
+
+        .week-calendar-strip-day:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 1px;
+        }
+
+        .week-calendar-body {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow: auto;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
+            touch-action: pan-y;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: #f8fafc;
+        }
+
+        .week-calendar-status {
+            display: grid;
+            place-items: center;
+            min-height: 180px;
+            padding: 20px;
+            color: var(--muted);
+            text-align: center;
+        }
+
+        .week-calendar-status.is-error {
+            color: #8e2a2a;
+        }
+
+        .week-calendar-grid {
+            display: grid;
+            grid-template-columns: 44px minmax(0, 1fr);
+            min-width: 0;
+            background: var(--card);
+        }
+
+        .week-calendar-grid.is-day-view .week-calendar-corner,
+        .week-calendar-grid.is-day-view .week-calendar-day-head {
+            display: none;
+        }
+
+        .week-calendar-corner,
+        .week-calendar-day-head,
+        .week-calendar-allday-gutter,
+        .week-calendar-time-gutter,
+        .week-calendar-gutter,
+        .week-calendar-allday-cell,
+        .week-calendar-day-col {
+            border-right: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .week-calendar-time-gutter {
+            border-right: 1px solid var(--border);
+            border-bottom: 0;
+            background: #fafcfe;
+        }
+
+        .week-calendar-time-gutter .week-calendar-gutter {
+            border-right: 0;
+        }
+
+        .week-calendar-time-gutter .week-calendar-gutter:last-child,
+        .week-calendar-day-col {
+            border-bottom: 0;
+        }
+
+        .week-calendar-corner,
+        .week-calendar-day-head {
+            position: sticky;
+            top: 0;
+            z-index: 3;
+            background: #f4f7fb;
+        }
+
+        .week-calendar-day-head {
+            padding: 8px 6px 6px;
+            text-align: center;
+        }
+
+        .week-calendar-day-head.is-weekend,
+        .week-calendar-allday-cell.is-weekend,
+        .week-calendar-day-col.is-weekend {
+            background-color: #f7f8fa;
+        }
+
+        .week-calendar-day-head.is-today {
+            background-color: #e8f1fb;
+        }
+
+        .week-calendar-weekday {
+            display: block;
+            font-size: .68rem;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+            color: var(--muted);
+            line-height: 1.2;
+        }
+
+        .week-calendar-day-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 26px;
+            height: 26px;
+            padding: 0 6px;
+            border-radius: 999px;
+            font-size: .9rem;
+            font-weight: 700;
+        }
+
+        .week-calendar-day-number.is-today {
+            background: var(--primary);
+            color: #fff;
+        }
+
+        .week-calendar-allday-gutter,
+        .week-calendar-allday-cell {
+            min-height: 36px;
+            background: #fafcfe;
+        }
+
+        .week-calendar-allday-gutter {
+            padding: 6px 3px;
+            font-size: .65rem;
+            color: var(--muted);
+            line-height: 1.2;
+        }
+
+        .week-calendar-allday-cell {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 5px;
+        }
+
+        .week-calendar-gutter {
+            position: relative;
+            background: #fafcfe;
+        }
+
+        .week-calendar-hour-label {
+            position: absolute;
+            top: -7px;
+            right: 4px;
+            font-size: .65rem;
+            color: var(--muted);
+            line-height: 1;
+        }
+
+        .week-calendar-time-gutter .week-calendar-gutter:first-child .week-calendar-hour-label {
+            top: 3px;
+        }
+
+        .week-calendar-day-col {
+            position: relative;
+            background-image: linear-gradient(to bottom, transparent calc(100% - 1px), var(--border) calc(100% - 1px));
+            background-size: 100% var(--week-hour-height, 64px);
+        }
+
+        .week-calendar-event {
+            position: absolute;
+            box-sizing: border-box;
+            border-radius: 8px;
+            padding: 5px 7px;
+            overflow: hidden;
+            text-decoration: none;
+            color: var(--text);
+            border: 1px solid rgba(21, 34, 51, 0.14);
+            background: #d7e8fb;
+            font-size: .82rem;
+            line-height: 1.3;
+            z-index: 1;
+        }
+
+        .week-calendar-event:hover,
+        .week-calendar-event:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 0;
+            z-index: 2;
+        }
+
+        .week-calendar-event.is-all-day {
+            position: relative;
+            inset: auto;
+            min-height: 28px;
+        }
+
+        .week-calendar-event-time {
+            display: block;
+            font-weight: 700;
+        }
+
+        .week-calendar-event-title {
+            display: block;
+            font-weight: 600;
+        }
+
+        .week-calendar-event-object {
+            display: block;
+            color: #314155;
+        }
+
+        .week-calendar-now {
+            position: absolute;
+            left: 0;
+            right: 0;
+            height: 0;
+            border-top: 2px solid #d93025;
+            z-index: 4;
+            pointer-events: none;
+        }
+
+        .week-calendar-now::before {
+            content: '';
+            position: absolute;
+            left: -5px;
+            top: -5px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #d93025;
+        }
+
+        .week-calendar-empty-day {
+            position: absolute;
+            left: 12px;
+            right: 12px;
+            top: 18px;
+            color: var(--muted);
+            font-size: .88rem;
+            text-align: center;
+        }
+
+        @media (min-width: 900px) {
+            .week-calendar-modal {
+                place-items: center;
+                padding: 10px;
+            }
+
+            .week-calendar-modal-backdrop {
+                display: block;
+                position: absolute;
+                inset: 0;
+                background: rgba(21, 34, 51, 0.46);
+            }
+
+            .week-calendar-modal-card {
+                width: min(100%, 1120px);
+                height: min(92vh, 860px);
+                max-height: min(92vh, 860px);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 12px;
+            }
+
+            .week-calendar-header {
+                margin-bottom: 10px;
+            }
+
+            .week-calendar-nav {
+                display: flex;
+                align-items: center;
+                justify-content: flex-end;
+                gap: 8px;
+            }
+
+            #week-calendar-prev {
+                order: 2;
+            }
+
+            .week-calendar-heading {
+                order: 1;
+                flex: 1 1 auto;
+                text-align: left;
+            }
+
+            #week-calendar-next {
+                order: 3;
+            }
+
+            .week-calendar-close {
+                order: 4;
+            }
+
+            .week-calendar-title {
+                position: static;
+                width: auto;
+                height: auto;
+                margin: 0 0 2px;
+                overflow: visible;
+                clip: auto;
+                white-space: normal;
+                font-size: 1rem;
+            }
+
+            .week-calendar-label {
+                text-align: left;
+                font-size: .95rem;
+            }
+
+            .week-calendar-subtitle {
+                font-size: .85rem;
+            }
+
+            .week-calendar-strip {
+                display: none;
+            }
+
+            .week-calendar-grid {
+                grid-template-columns: 52px repeat(7, minmax(96px, 1fr));
+                min-width: 760px;
+            }
+
+            .week-calendar-event {
+                border-radius: 5px;
+                padding: 3px 5px;
+                font-size: .72rem;
+                line-height: 1.25;
+            }
+
+            .week-calendar-event.is-all-day {
+                min-height: 22px;
+            }
+
+            .week-calendar-body {
+                border-radius: 10px;
+            }
+        }
+
         .page-loader {
             position: fixed;
             inset: 0;
@@ -4757,7 +5503,8 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
         }
 
         @media print {
-            .back {
+            .back,
+            .week-calendar-modal {
                 display: none !important;
             }
 
@@ -4794,6 +5541,16 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                             </option>
                         <?php endforeach; ?>
                     </select>
+                    <?php if ($showWeekCalendarButton): ?>
+                        <button id="open-week-calendar" class="icon-button" type="button" aria-label="Weekkalender"
+                            title="Weekkalender"
+                            data-calendar-url="<?= htmlspecialchars($weekCalendarUrl) ?>">
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <rect x="3.2" y="5" width="17.6" height="15.2" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.8" />
+                                <path d="M3.2 9.4h17.6M8 3.4v4M16 3.4v4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                            </svg>
+                        </button>
+                    <?php endif; ?>
                     <button id="open-email-notification" class="icon-button" type="button" aria-label="E-mailmeldingen"
                         title="E-mailmeldingen">✉</button>
                 </div>
@@ -4981,6 +5738,26 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                         <button id="save-email-notification" class="button" type="button">Opslaan</button>
                     <?php endif; ?>
                 </div>
+            </div>
+        </div>
+
+        <div id="week-calendar-modal" class="week-calendar-modal" hidden>
+            <div class="week-calendar-modal-backdrop" data-week-calendar-close></div>
+            <div class="week-calendar-modal-card" role="dialog" aria-modal="true" aria-labelledby="week-calendar-title">
+                <div class="week-calendar-header">
+                    <div class="week-calendar-nav">
+                        <button id="week-calendar-prev" class="icon-button" type="button" aria-label="Vorige week" title="Vorige week">‹</button>
+                        <div class="week-calendar-heading">
+                            <h2 id="week-calendar-title" class="week-calendar-title">Weekkalender</h2>
+                            <span id="week-calendar-label" class="week-calendar-label">Week laden...</span>
+                            <p id="week-calendar-subtitle" class="week-calendar-subtitle"></p>
+                        </div>
+                        <button id="week-calendar-next" class="icon-button" type="button" aria-label="Volgende week" title="Volgende week">›</button>
+                        <button class="icon-button week-calendar-close" type="button" data-week-calendar-close aria-label="Sluiten" title="Sluiten">✕</button>
+                    </div>
+                </div>
+                <div id="week-calendar-strip" class="week-calendar-strip"></div>
+                <div id="week-calendar-body" class="week-calendar-body"></div>
             </div>
         </div>
 
@@ -5727,8 +6504,16 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             const dayPickerInputEl = document.getElementById('date_day');
             const statusModalEl = document.getElementById('status-filter-modal');
             const emailModalEl = document.getElementById('email-notification-modal');
+            const weekCalendarModalEl = document.getElementById('week-calendar-modal');
+            const weekCalendarBodyEl = document.getElementById('week-calendar-body');
+            const weekCalendarStripEl = document.getElementById('week-calendar-strip');
+            const weekCalendarLabelEl = document.getElementById('week-calendar-label');
+            const weekCalendarSubtitleEl = document.getElementById('week-calendar-subtitle');
+            const weekCalendarPrevEl = document.getElementById('week-calendar-prev');
+            const weekCalendarNextEl = document.getElementById('week-calendar-next');
             const openStatusFilterEl = document.getElementById('open-status-filter');
             const openEmailNotificationEl = document.getElementById('open-email-notification');
+            const openWeekCalendarEl = document.getElementById('open-week-calendar');
             const saveStatusFilterEl = document.getElementById('save-status-filter');
             const saveEmailNotificationEl = document.getElementById('save-email-notification');
             const statusFiltersInputEl = document.getElementById('status_filters');
@@ -5742,7 +6527,48 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             const webfleetFilterCheckboxEls = Array.from(document.querySelectorAll('.webfleet-filter-checkbox'));
             const statusCloseEls = Array.from(document.querySelectorAll('[data-status-close]'));
             const emailCloseEls = Array.from(document.querySelectorAll('[data-email-close]'));
+            const weekCalendarCloseEls = Array.from(document.querySelectorAll('[data-week-calendar-close]'));
             let searchApplyHintTimeoutId = 0;
+            const WEEK_CALENDAR_DEFAULT_START_HOUR = 7;
+            const WEEK_CALENDAR_DEFAULT_END_HOUR = 18;
+            const weekCalendarDayViewQuery = window.matchMedia('(max-width: 899px)');
+            let weekCalendarWeekDate = '';
+            let weekCalendarSelectedDate = '';
+            let weekCalendarPayload = null;
+            let weekCalendarAbortController = null;
+            let weekCalendarNowTimerId = 0;
+            let weekCalendarTouchStartX = 0;
+            let weekCalendarTouchStartY = 0;
+
+            function isWeekCalendarDayView ()
+            {
+                return weekCalendarDayViewQuery.matches;
+            }
+
+            function weekCalendarHourHeight ()
+            {
+                return isWeekCalendarDayView() ? 64 : 52;
+            }
+
+            function weekCalendarLabelText (payload)
+            {
+                if (isWeekCalendarDayView() && payload && payload.week_label_short)
+                {
+                    return String(payload.week_label_short);
+                }
+
+                if (payload && payload.week_label)
+                {
+                    return String(payload.week_label);
+                }
+
+                return weekCalendarWeekDate;
+            }
+
+            function setWeekCalendarPageLock (locked)
+            {
+                document.body.classList.toggle('week-calendar-open', !!locked);
+            }
 
             function rotateSearchPlaceholder ()
             {
@@ -5898,6 +6724,675 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                 emailModalEl.hidden = false;
             }
 
+            function mondayIsoDate (value)
+            {
+                const date = value instanceof Date ? new Date(value.getTime()) : new Date(value + 'T00:00:00');
+                if (Number.isNaN(date.getTime()))
+                {
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    const weekday = today.getDay() === 0 ? 7 : today.getDay();
+                    today.setDate(today.getDate() - (weekday - 1));
+                    return today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+                }
+
+                date.setHours(0, 0, 0, 0);
+                const weekday = date.getDay() === 0 ? 7 : date.getDay();
+                date.setDate(date.getDate() - (weekday - 1));
+                return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+            }
+
+            function shiftIsoDate (value, days)
+            {
+                const date = new Date(value + 'T00:00:00');
+                date.setDate(date.getDate() + days);
+                return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+            }
+
+            function selectedResourceLabel ()
+            {
+                if (!personSelectEl)
+                {
+                    return '';
+                }
+
+                const optionEl = personSelectEl.options[personSelectEl.selectedIndex];
+                if (!optionEl)
+                {
+                    return '';
+                }
+
+                return (optionEl.getAttribute('data-name') || '').trim();
+            }
+
+            function weekCalendarVisibleHours (days)
+            {
+                let minMinutes = WEEK_CALENDAR_DEFAULT_START_HOUR * 60;
+                let maxMinutes = WEEK_CALENDAR_DEFAULT_END_HOUR * 60;
+
+                (days || []).forEach(function (day)
+                {
+                    (day.workorders || []).forEach(function (workOrder)
+                    {
+                        if (workOrder.all_day)
+                        {
+                            return;
+                        }
+
+                        if (Number.isFinite(Number(workOrder.start_minutes)))
+                        {
+                            minMinutes = Math.min(minMinutes, Number(workOrder.start_minutes));
+                        }
+
+                        if (Number.isFinite(Number(workOrder.end_minutes)))
+                        {
+                            maxMinutes = Math.max(maxMinutes, Number(workOrder.end_minutes));
+                        }
+                    });
+                });
+
+                const startHour = Math.max(0, Math.floor(minMinutes / 60));
+                let endHour = Math.min(24, Math.ceil(maxMinutes / 60));
+                if (endHour <= startHour)
+                {
+                    endHour = Math.min(24, startHour + 1);
+                }
+
+                return {
+                    startHour: startHour,
+                    endHour: endHour
+                };
+            }
+
+            function assignWeekCalendarColumns (events)
+            {
+                const sorted = events.slice().sort(function (left, right)
+                {
+                    if (left.startMinutes !== right.startMinutes)
+                    {
+                        return left.startMinutes - right.startMinutes;
+                    }
+
+                    return right.endMinutes - left.endMinutes;
+                });
+
+                const columnEnds = [];
+                sorted.forEach(function (eventItem)
+                {
+                    let column = 0;
+                    while (column < columnEnds.length && columnEnds[column] > eventItem.startMinutes)
+                    {
+                        column += 1;
+                    }
+
+                    eventItem.column = column;
+                    columnEnds[column] = eventItem.endMinutes;
+                });
+
+                sorted.forEach(function (eventItem)
+                {
+                    let maxColumn = eventItem.column;
+                    sorted.forEach(function (otherItem)
+                    {
+                        if (otherItem.startMinutes < eventItem.endMinutes && otherItem.endMinutes > eventItem.startMinutes)
+                        {
+                            maxColumn = Math.max(maxColumn, otherItem.column);
+                        }
+                    });
+                    eventItem.columnCount = maxColumn + 1;
+                });
+
+                return sorted;
+            }
+
+            function createWeekCalendarEventEl (workOrder, extraClassName)
+            {
+                const eventEl = document.createElement(workOrder.href ? 'a' : 'div');
+                eventEl.className = 'week-calendar-event' + (extraClassName ? (' ' + extraClassName) : '');
+                if (workOrder.status_class)
+                {
+                    eventEl.classList.add(workOrder.status_class);
+                }
+                if (workOrder.href)
+                {
+                    eventEl.setAttribute('href', workOrder.href);
+                    eventEl.setAttribute('data-nav-link', '1');
+                }
+
+                const timeText = [workOrder.start_time, workOrder.end_time].filter(Boolean).join('–');
+                const titleText = (workOrder.title || workOrder.no || 'Werkorder').toString();
+                const objectText = (workOrder.object || '').toString();
+                eventEl.title = [timeText, titleText, objectText, workOrder.no].filter(Boolean).join(' · ');
+
+                if (timeText !== '')
+                {
+                    const timeEl = document.createElement('span');
+                    timeEl.className = 'week-calendar-event-time';
+                    timeEl.textContent = timeText;
+                    eventEl.appendChild(timeEl);
+                }
+
+                const titleEl = document.createElement('span');
+                titleEl.className = 'week-calendar-event-title';
+                titleEl.textContent = titleText;
+                eventEl.appendChild(titleEl);
+
+                if (objectText !== '')
+                {
+                    const objectEl = document.createElement('span');
+                    objectEl.className = 'week-calendar-event-object';
+                    objectEl.textContent = objectText;
+                    eventEl.appendChild(objectEl);
+                }
+
+                return eventEl;
+            }
+
+            function updateWeekCalendarNowLine ()
+            {
+                if (!weekCalendarBodyEl)
+                {
+                    return;
+                }
+
+                const nowLineEls = weekCalendarBodyEl.querySelectorAll('.week-calendar-now');
+                if (nowLineEls.length === 0)
+                {
+                    return;
+                }
+
+                const startHour = Number(weekCalendarBodyEl.getAttribute('data-start-hour'));
+                const endHour = Number(weekCalendarBodyEl.getAttribute('data-end-hour'));
+                if (!Number.isFinite(startHour) || !Number.isFinite(endHour))
+                {
+                    return;
+                }
+
+                const now = new Date();
+                const nowMinutes = (now.getHours() * 60) + now.getMinutes();
+                const rangeStart = startHour * 60;
+                const rangeEnd = endHour * 60;
+                const visible = nowMinutes >= rangeStart && nowMinutes <= rangeEnd;
+                const top = ((nowMinutes - rangeStart) / 60) * weekCalendarHourHeight();
+
+                nowLineEls.forEach(function (nowLineEl)
+                {
+                    nowLineEl.hidden = !visible;
+                    if (visible)
+                    {
+                        nowLineEl.style.top = top + 'px';
+                    }
+                });
+            }
+
+            function resolveWeekCalendarSelectedDay (days)
+            {
+                if (days.some(function (day) { return day.date === weekCalendarSelectedDate; }))
+                {
+                    return;
+                }
+
+                if (weekCalendarSelectedDate !== '')
+                {
+                    const selected = new Date(weekCalendarSelectedDate + 'T00:00:00');
+                    if (!Number.isNaN(selected.getTime()))
+                    {
+                        const weekdayIndex = selected.getDay() === 0 ? 6 : selected.getDay() - 1;
+                        if (days[weekdayIndex] && days[weekdayIndex].date)
+                        {
+                            weekCalendarSelectedDate = String(days[weekdayIndex].date);
+                            return;
+                        }
+                    }
+                }
+
+                const today = days.find(function (day) { return !!day.is_today; });
+                weekCalendarSelectedDate = String((today || days[0] || {}).date || '');
+            }
+
+            function weekCalendarDaysForView (days)
+            {
+                if (!isWeekCalendarDayView())
+                {
+                    return days;
+                }
+
+                const selectedDay = days.find(function (day)
+                {
+                    return day.date === weekCalendarSelectedDate;
+                });
+
+                return selectedDay ? [selectedDay] : days.slice(0, 1);
+            }
+
+            function renderWeekCalendarStrip (days)
+            {
+                if (!weekCalendarStripEl)
+                {
+                    return;
+                }
+
+                weekCalendarStripEl.textContent = '';
+                days.forEach(function (day)
+                {
+                    const dayButtonEl = document.createElement('button');
+                    dayButtonEl.type = 'button';
+                    dayButtonEl.className = 'week-calendar-strip-day';
+                    dayButtonEl.setAttribute('data-date', String(day.date || ''));
+                    if (day.is_weekend)
+                    {
+                        dayButtonEl.classList.add('is-weekend');
+                    }
+                    if (day.is_today)
+                    {
+                        dayButtonEl.classList.add('is-today');
+                    }
+                    dayButtonEl.setAttribute('aria-label', ((day.weekday || '') + ' ' + String(day.day || '')).trim());
+                    if (day.date === weekCalendarSelectedDate)
+                    {
+                        dayButtonEl.classList.add('is-selected');
+                        dayButtonEl.setAttribute('aria-current', 'date');
+                    }
+
+                    const weekdayEl = document.createElement('span');
+                    weekdayEl.className = 'week-calendar-weekday';
+                    weekdayEl.textContent = (day.weekday || '').toString();
+                    dayButtonEl.appendChild(weekdayEl);
+
+                    const numberEl = document.createElement('span');
+                    numberEl.className = 'week-calendar-day-number';
+                    if (day.is_today)
+                    {
+                        numberEl.classList.add('is-today');
+                    }
+                    numberEl.textContent = String(day.day || '');
+                    dayButtonEl.appendChild(numberEl);
+                    weekCalendarStripEl.appendChild(dayButtonEl);
+                });
+            }
+
+            function scrollWeekCalendarIntoContext ()
+            {
+                if (!weekCalendarBodyEl)
+                {
+                    return;
+                }
+
+                const nowLineEl = weekCalendarBodyEl.querySelector('.week-calendar-now:not([hidden])');
+                const targetEl = nowLineEl || weekCalendarBodyEl.querySelector('.week-calendar-event');
+                if (!targetEl)
+                {
+                    return;
+                }
+
+                const bodyRect = weekCalendarBodyEl.getBoundingClientRect();
+                const targetRect = targetEl.getBoundingClientRect();
+                const offset = nowLineEl ? (bodyRect.height * 0.35) : 16;
+                weekCalendarBodyEl.scrollTop += (targetRect.top - bodyRect.top) - offset;
+            }
+
+            function renderWeekCalendar (payload)
+            {
+                if (!weekCalendarBodyEl)
+                {
+                    return;
+                }
+
+                weekCalendarPayload = payload;
+                const days = Array.isArray(payload.days) ? payload.days : [];
+                resolveWeekCalendarSelectedDay(days);
+                renderWeekCalendarStrip(days);
+
+                const visibleDays = weekCalendarDaysForView(days);
+                const hourHeight = weekCalendarHourHeight();
+                const hours = weekCalendarVisibleHours(visibleDays);
+                const hourCount = Math.max(1, hours.endHour - hours.startHour);
+                const gridHeight = hourCount * hourHeight;
+                const hasAllDay = visibleDays.some(function (day)
+                {
+                    return (day.workorders || []).some(function (workOrder)
+                    {
+                        return !!workOrder.all_day;
+                    });
+                });
+                const isDayView = isWeekCalendarDayView();
+
+                weekCalendarBodyEl.setAttribute('data-start-hour', String(hours.startHour));
+                weekCalendarBodyEl.setAttribute('data-end-hour', String(hours.endHour));
+                weekCalendarBodyEl.style.setProperty('--week-hour-height', hourHeight + 'px');
+                weekCalendarBodyEl.textContent = '';
+
+                const gridEl = document.createElement('div');
+                gridEl.className = 'week-calendar-grid' + (isDayView ? ' is-day-view' : '');
+
+                const cornerEl = document.createElement('div');
+                cornerEl.className = 'week-calendar-corner';
+                gridEl.appendChild(cornerEl);
+
+                visibleDays.forEach(function (day)
+                {
+                    const headEl = document.createElement('div');
+                    headEl.className = 'week-calendar-day-head';
+                    if (day.is_weekend)
+                    {
+                        headEl.classList.add('is-weekend');
+                    }
+                    if (day.is_today)
+                    {
+                        headEl.classList.add('is-today');
+                    }
+
+                    const weekdayEl = document.createElement('span');
+                    weekdayEl.className = 'week-calendar-weekday';
+                    weekdayEl.textContent = (day.weekday || '').toString();
+                    headEl.appendChild(weekdayEl);
+
+                    const numberEl = document.createElement('span');
+                    numberEl.className = 'week-calendar-day-number';
+                    if (day.is_today)
+                    {
+                        numberEl.classList.add('is-today');
+                    }
+                    numberEl.textContent = String(day.day || '');
+                    headEl.appendChild(numberEl);
+                    gridEl.appendChild(headEl);
+                });
+
+                if (hasAllDay)
+                {
+                    const allDayGutterEl = document.createElement('div');
+                    allDayGutterEl.className = 'week-calendar-allday-gutter';
+                    allDayGutterEl.textContent = 'Hele dag';
+                    gridEl.appendChild(allDayGutterEl);
+
+                    visibleDays.forEach(function (day)
+                    {
+                        const allDayCellEl = document.createElement('div');
+                        allDayCellEl.className = 'week-calendar-allday-cell';
+                        if (day.is_weekend)
+                        {
+                            allDayCellEl.classList.add('is-weekend');
+                        }
+
+                        (day.workorders || []).forEach(function (workOrder)
+                        {
+                            if (!workOrder.all_day)
+                            {
+                                return;
+                            }
+
+                            allDayCellEl.appendChild(createWeekCalendarEventEl(workOrder, 'is-all-day'));
+                        });
+
+                        gridEl.appendChild(allDayCellEl);
+                    });
+                }
+
+                const timeGutterEl = document.createElement('div');
+                timeGutterEl.className = 'week-calendar-time-gutter';
+                timeGutterEl.style.height = gridHeight + 'px';
+
+                for (let hour = hours.startHour; hour < hours.endHour; hour += 1)
+                {
+                    const gutterEl = document.createElement('div');
+                    gutterEl.className = 'week-calendar-gutter';
+                    gutterEl.style.height = hourHeight + 'px';
+                    gutterEl.setAttribute('data-hour', String(hour));
+
+                    const labelEl = document.createElement('span');
+                    labelEl.className = 'week-calendar-hour-label';
+                    labelEl.textContent = String(hour).padStart(2, '0') + ':00';
+                    gutterEl.appendChild(labelEl);
+                    timeGutterEl.appendChild(gutterEl);
+                }
+
+                gridEl.appendChild(timeGutterEl);
+
+                visibleDays.forEach(function (day)
+                {
+                    const columnEl = document.createElement('div');
+                    columnEl.className = 'week-calendar-day-col';
+                    columnEl.style.height = gridHeight + 'px';
+                    if (day.is_weekend)
+                    {
+                        columnEl.classList.add('is-weekend');
+                    }
+
+                    const timedEvents = (day.workorders || []).filter(function (workOrder)
+                    {
+                        return !workOrder.all_day
+                            && Number.isFinite(Number(workOrder.start_minutes))
+                            && Number.isFinite(Number(workOrder.end_minutes));
+                    }).map(function (workOrder)
+                    {
+                        return {
+                            workOrder: workOrder,
+                            startMinutes: Number(workOrder.start_minutes),
+                            endMinutes: Number(workOrder.end_minutes)
+                        };
+                    });
+
+                    const minEventHeight = isDayView ? 28 : 22;
+                    assignWeekCalendarColumns(timedEvents).forEach(function (eventItem)
+                    {
+                        const eventEl = createWeekCalendarEventEl(eventItem.workOrder);
+                        const top = ((eventItem.startMinutes - (hours.startHour * 60)) / 60) * hourHeight;
+                        const height = Math.max(minEventHeight, ((eventItem.endMinutes - eventItem.startMinutes) / 60) * hourHeight);
+                        const width = 100 / eventItem.columnCount;
+                        eventEl.style.top = top + 'px';
+                        eventEl.style.height = height + 'px';
+                        eventEl.style.left = 'calc(' + (width * eventItem.column) + '% + 2px)';
+                        eventEl.style.width = 'calc(' + width + '% - 4px)';
+                        columnEl.appendChild(eventEl);
+                    });
+
+                    if (isDayView && timedEvents.length === 0 && !hasAllDay)
+                    {
+                        const emptyEl = document.createElement('div');
+                        emptyEl.className = 'week-calendar-empty-day';
+                        emptyEl.textContent = 'Geen werkorders op deze dag';
+                        columnEl.appendChild(emptyEl);
+                    }
+
+                    if (day.is_today)
+                    {
+                        const nowLineEl = document.createElement('div');
+                        nowLineEl.className = 'week-calendar-now';
+                        nowLineEl.hidden = true;
+                        columnEl.appendChild(nowLineEl);
+                    }
+
+                    gridEl.appendChild(columnEl);
+                });
+
+                weekCalendarBodyEl.appendChild(gridEl);
+                updateWeekCalendarNowLine();
+                window.requestAnimationFrame(scrollWeekCalendarIntoContext);
+            }
+
+            function shiftWeekCalendarDay (delta)
+            {
+                const days = weekCalendarPayload && Array.isArray(weekCalendarPayload.days)
+                    ? weekCalendarPayload.days
+                    : [];
+                if (days.length === 0 || weekCalendarWeekDate === '')
+                {
+                    return;
+                }
+
+                const currentIndex = days.findIndex(function (day)
+                {
+                    return day.date === weekCalendarSelectedDate;
+                });
+                const nextIndex = currentIndex + delta;
+                if (nextIndex >= 0 && nextIndex < days.length && days[nextIndex].date)
+                {
+                    weekCalendarSelectedDate = String(days[nextIndex].date);
+                    renderWeekCalendar(weekCalendarPayload);
+                    return;
+                }
+
+                if (delta < 0)
+                {
+                    weekCalendarSelectedDate = shiftIsoDate(weekCalendarWeekDate, -1);
+                    loadWeekCalendar(shiftIsoDate(weekCalendarWeekDate, -7));
+                    return;
+                }
+
+                weekCalendarSelectedDate = shiftIsoDate(weekCalendarWeekDate, 7);
+                loadWeekCalendar(shiftIsoDate(weekCalendarWeekDate, 7));
+            }
+
+            function showWeekCalendarStatus (message, isError)
+            {
+                if (!weekCalendarBodyEl)
+                {
+                    return;
+                }
+
+                weekCalendarBodyEl.textContent = '';
+                const statusEl = document.createElement('div');
+                statusEl.className = 'week-calendar-status' + (isError ? ' is-error' : '');
+                statusEl.textContent = message;
+                weekCalendarBodyEl.appendChild(statusEl);
+            }
+
+            function loadWeekCalendar (weekDate)
+            {
+                if (!openWeekCalendarEl)
+                {
+                    return;
+                }
+
+                const calendarUrl = (openWeekCalendarEl.getAttribute('data-calendar-url') || '').trim();
+                if (calendarUrl === '')
+                {
+                    showWeekCalendarStatus('Kalender kon niet worden geladen.', true);
+                    return;
+                }
+
+                weekCalendarWeekDate = mondayIsoDate(weekDate);
+                if (weekCalendarLabelEl)
+                {
+                    weekCalendarLabelEl.textContent = 'Week laden...';
+                }
+                showWeekCalendarStatus('Week laden...');
+
+                if (weekCalendarAbortController)
+                {
+                    weekCalendarAbortController.abort();
+                }
+                weekCalendarAbortController = new AbortController();
+
+                const endpoint = new URL(calendarUrl, window.location.href);
+                endpoint.searchParams.set('week', weekCalendarWeekDate);
+                if (dateFromEl && dateFromEl.value)
+                {
+                    endpoint.searchParams.set('date_from', dateFromEl.value);
+                }
+                if (dateToEl && dateToEl.value)
+                {
+                    endpoint.searchParams.set('date_to', dateToEl.value);
+                }
+                if (searchInputEl && searchInputEl.value)
+                {
+                    endpoint.searchParams.set('q', searchInputEl.value);
+                }
+
+                fetch(endpoint.toString(), {
+                    credentials: 'same-origin',
+                    headers: {
+                        'Accept': 'application/json'
+                    },
+                    signal: weekCalendarAbortController.signal
+                })
+                    .then(function (response)
+                    {
+                        return response.json().then(function (payload)
+                        {
+                            return {
+                                ok: response.ok,
+                                payload: payload
+                            };
+                        });
+                    })
+                    .then(function (result)
+                    {
+                        const payload = result.payload && typeof result.payload === 'object' ? result.payload : {};
+                        if (!result.ok || !payload.ok)
+                        {
+                            showWeekCalendarStatus((payload.error || 'Kon weekkalender niet laden.').toString(), true);
+                            return;
+                        }
+
+                        if (payload.week_start)
+                        {
+                            weekCalendarWeekDate = String(payload.week_start);
+                        }
+                        if (weekCalendarLabelEl)
+                        {
+                            weekCalendarLabelEl.textContent = weekCalendarLabelText(payload);
+                        }
+
+                        renderWeekCalendar(payload);
+                    })
+                    .catch(function (error)
+                    {
+                        if (error && error.name === 'AbortError')
+                        {
+                            return;
+                        }
+
+                        showWeekCalendarStatus('Kon weekkalender niet laden.', true);
+                    });
+            }
+
+            function closeWeekCalendarModal ()
+            {
+                if (!weekCalendarModalEl)
+                {
+                    return;
+                }
+
+                weekCalendarModalEl.hidden = true;
+                setWeekCalendarPageLock(false);
+                if (weekCalendarNowTimerId)
+                {
+                    window.clearInterval(weekCalendarNowTimerId);
+                    weekCalendarNowTimerId = 0;
+                }
+                if (weekCalendarAbortController)
+                {
+                    weekCalendarAbortController.abort();
+                    weekCalendarAbortController = null;
+                }
+            }
+
+            function openWeekCalendarModal ()
+            {
+                if (!weekCalendarModalEl)
+                {
+                    return;
+                }
+
+                const resourceName = selectedResourceLabel();
+                if (weekCalendarSubtitleEl)
+                {
+                    weekCalendarSubtitleEl.textContent = resourceName !== '' ? resourceName : '';
+                }
+
+                weekCalendarSelectedDate = '';
+                weekCalendarModalEl.hidden = false;
+                setWeekCalendarPageLock(true);
+                loadWeekCalendar(new Date());
+
+                if (weekCalendarNowTimerId)
+                {
+                    window.clearInterval(weekCalendarNowTimerId);
+                }
+                weekCalendarNowTimerId = window.setInterval(updateWeekCalendarNowLine, 30000);
+            }
+
             if (openStatusFilterEl)
             {
                 openStatusFilterEl.addEventListener('click', function ()
@@ -5911,6 +7406,133 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                 openEmailNotificationEl.addEventListener('click', function ()
                 {
                     openEmailModal();
+                });
+            }
+
+            if (openWeekCalendarEl)
+            {
+                openWeekCalendarEl.addEventListener('click', function ()
+                {
+                    openWeekCalendarModal();
+                });
+            }
+
+            if (weekCalendarPrevEl)
+            {
+                weekCalendarPrevEl.addEventListener('click', function ()
+                {
+                    if (weekCalendarWeekDate === '')
+                    {
+                        return;
+                    }
+
+                    loadWeekCalendar(shiftIsoDate(weekCalendarWeekDate, -7));
+                });
+            }
+
+            if (weekCalendarNextEl)
+            {
+                weekCalendarNextEl.addEventListener('click', function ()
+                {
+                    if (weekCalendarWeekDate === '')
+                    {
+                        return;
+                    }
+
+                    loadWeekCalendar(shiftIsoDate(weekCalendarWeekDate, 7));
+                });
+            }
+
+            if (weekCalendarStripEl)
+            {
+                weekCalendarStripEl.addEventListener('click', function (event)
+                {
+                    const target = event.target;
+                    if (!(target instanceof Element))
+                    {
+                        return;
+                    }
+
+                    const dayButtonEl = target.closest('.week-calendar-strip-day');
+                    if (!dayButtonEl || !weekCalendarPayload)
+                    {
+                        return;
+                    }
+
+                    const nextDate = (dayButtonEl.getAttribute('data-date') || '').trim();
+                    if (nextDate === '' || nextDate === weekCalendarSelectedDate)
+                    {
+                        return;
+                    }
+
+                    weekCalendarSelectedDate = nextDate;
+                    renderWeekCalendar(weekCalendarPayload);
+                });
+            }
+
+            if (weekCalendarBodyEl)
+            {
+                weekCalendarBodyEl.addEventListener('click', function (event)
+                {
+                    const target = event.target;
+                    if (!(target instanceof Element))
+                    {
+                        return;
+                    }
+
+                    const linkEl = target.closest('a.week-calendar-event');
+                    if (!linkEl)
+                    {
+                        return;
+                    }
+
+                    showLoader();
+                });
+
+                weekCalendarBodyEl.addEventListener('touchstart', function (event)
+                {
+                    if (!event.changedTouches || !event.changedTouches[0])
+                    {
+                        return;
+                    }
+
+                    weekCalendarTouchStartX = event.changedTouches[0].clientX;
+                    weekCalendarTouchStartY = event.changedTouches[0].clientY;
+                }, { passive: true });
+
+                weekCalendarBodyEl.addEventListener('touchend', function (event)
+                {
+                    if (!isWeekCalendarDayView() || !event.changedTouches || !event.changedTouches[0])
+                    {
+                        return;
+                    }
+
+                    const deltaX = event.changedTouches[0].clientX - weekCalendarTouchStartX;
+                    const deltaY = event.changedTouches[0].clientY - weekCalendarTouchStartY;
+                    if (Math.abs(deltaX) < 56 || Math.abs(deltaX) < Math.abs(deltaY) * 1.35)
+                    {
+                        return;
+                    }
+
+                    shiftWeekCalendarDay(deltaX < 0 ? 1 : -1);
+                }, { passive: true });
+            }
+
+            if (typeof weekCalendarDayViewQuery.addEventListener === 'function')
+            {
+                weekCalendarDayViewQuery.addEventListener('change', function ()
+                {
+                    if (!weekCalendarPayload || !weekCalendarModalEl || weekCalendarModalEl.hidden)
+                    {
+                        return;
+                    }
+
+                    if (weekCalendarLabelEl)
+                    {
+                        weekCalendarLabelEl.textContent = weekCalendarLabelText(weekCalendarPayload);
+                    }
+
+                    renderWeekCalendar(weekCalendarPayload);
                 });
             }
 
@@ -5930,8 +7552,32 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                 });
             });
 
+            weekCalendarCloseEls.forEach(function (closeEl)
+            {
+                closeEl.addEventListener('click', function ()
+                {
+                    closeWeekCalendarModal();
+                });
+            });
+
             document.addEventListener('keydown', function (event)
             {
+                if (weekCalendarModalEl && !weekCalendarModalEl.hidden)
+                {
+                    if (event.key === 'Escape')
+                    {
+                        closeWeekCalendarModal();
+                        return;
+                    }
+
+                    if (isWeekCalendarDayView() && (event.key === 'ArrowLeft' || event.key === 'ArrowRight'))
+                    {
+                        event.preventDefault();
+                        shiftWeekCalendarDay(event.key === 'ArrowLeft' ? -1 : 1);
+                        return;
+                    }
+                }
+
                 if (event.key === 'Escape' && emailModalEl && !emailModalEl.hidden)
                 {
                     closeEmailModal();
