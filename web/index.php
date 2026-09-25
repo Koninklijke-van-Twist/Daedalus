@@ -41,11 +41,22 @@ if ($loadingTextInitial === '' && !empty($loadingTextOptions)) {
     $loadingTextInitial = (string) $loadingTextOptions[array_rand($loadingTextOptions)];
 }
 
+// Hardcoded fallback when $mimirApi is not set. With Mímir on, replaced by GET companies.
 $companies = [
     'Koninklijke van Twist',
     'Hunter van Twist',
     'KVT Gas',
 ];
+
+// Mímir company-discovery: use odata_mimir_list_companies (not the hardcoded list).
+// Userprefs still apply later: GET company → preference → first in list; then save preference.
+if (function_exists('odata_mimir_enabled') && odata_mimir_enabled()) {
+    try {
+        $companies = odata_mimir_list_companies(null);
+    } catch (Throwable $ignored) {
+        // keep hardcoded fallback if Mímir companies call fails
+    }
+}
 
 $minute = 60;
 $hour = $minute * 60;
@@ -3125,8 +3136,10 @@ if (in_companies($requestedCompany, $companies)) {
     $company = $requestedCompany;
 } elseif (in_companies($preferredCompany, $companies)) {
     $company = $preferredCompany;
-} else {
+} elseif ($companies !== []) {
     $company = $companies[0];
+} else {
+    $company = '';
 }
 
 if ($userEmail !== '') {

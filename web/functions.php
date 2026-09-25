@@ -6,7 +6,17 @@ function odata_company_url(string $environment, string $company, string $entity,
 {
     global $baseUrl;
     $encCompany = rawurlencode($company);
-    $base = $baseUrl . $environment . "/ODataV4/Company('" . $encCompany . "')/";
+
+    // When Mímir is on, build a synthetic OData URL that odata_mimir_parse_entity_url understands.
+    // No real $baseUrl / BC environment is required.
+    if (function_exists('odata_mimir_enabled') && odata_mimir_enabled()) {
+        $env = trim($environment) !== '' ? $environment : 'mimir';
+        $base = "https://mimir.invalid/" . $env . "/ODataV4/Company('" . $encCompany . "')/";
+    } else {
+        $prefix = (isset($baseUrl) && is_string($baseUrl)) ? $baseUrl : '';
+        $base = $prefix . $environment . "/ODataV4/Company('" . $encCompany . "')/";
+    }
+
     $query = '';
     if (!empty($params)) {
         $query = '?' . http_build_query($params, '', '&', PHP_QUERY_RFC3986);
