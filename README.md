@@ -10,5 +10,5 @@ $mimirApi  = 'mimir_…';
 $mimirBase = 'https://sleutels.kvt.nl/mimir/api';
 ```
 
-With `$mimirApi` set, `$auth_list`, `$environment`, `$baseUrl` and `$auth` are unused for Business Central — OData fetches and company discovery (`odata_mimir_list_companies`) go through Mímir. User company preference (GET → saved preference → first in list) is unchanged. The local odata file-cache widget remains available for the non-Mímir path. Without `$mimirApi` the existing BC path and hardcoded company list are unchanged.
+With `$mimirApi` set, OData fetches and company discovery (`odata_mimir_list_companies`) try Mímir first. If that call fails (connection/timeout, non-2xx, invalid JSON, or a Mímir error payload), Daedalus fetches the same data on the legacy Business Central path (`$baseUrl`, `$auth` / `$auth_list`, `$environment`, local odata file cache) and skips Mímir for the rest of that PHP request. Keep those BC credentials in `auth.php` next to `$mimirApi`; if they are absent the original Mímir error is raised. User company preference (GET → saved preference → first in list) is unchanged. Without `$mimirApi` the existing BC path and hardcoded company list are unchanged.
 
