@@ -354,6 +354,10 @@ function odata_bc_auth_for_request(?string $env, ?string $company, array $passed
         return odata_bc_auth_for_fallback($passed);
     }
 
+    if (!isset($auth_list) || !is_array($auth_list) || $auth_list === []) {
+        return odata_bc_auth_for_fallback($passed);
+    }
+
     return null;
 }
 
