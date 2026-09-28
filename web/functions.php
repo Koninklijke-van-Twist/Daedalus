@@ -8,8 +8,10 @@ function odata_company_url(string $environment, string $company, string $entity,
     $encCompany = rawurlencode($company);
 
     // When Mímir is on, build a synthetic OData URL that odata_mimir_parse_entity_url understands.
-    // No real $baseUrl / BC environment is required.
-    if (function_exists('odata_mimir_enabled') && odata_mimir_enabled()) {
+    // After a Mímir failure in this process the circuit is open and the pre-Mímir BC URL is used.
+    $mimirUrl = function_exists('odata_mimir_enabled') && odata_mimir_enabled()
+        && !(function_exists('odata_mimir_circuit_open') && odata_mimir_circuit_open());
+    if ($mimirUrl) {
         $env = trim($environment) !== '' ? $environment : 'mimir';
         $base = "https://mimir.invalid/" . $env . "/ODataV4/Company('" . $encCompany . "')/";
     } else {

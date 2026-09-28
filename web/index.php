@@ -49,12 +49,13 @@ $companies = [
 ];
 
 // Mímir company-discovery: use odata_mimir_list_companies (not the hardcoded list).
+// Bij een Mímir-fout haalt die functie dezelfde lijst via directe BC OData op.
 // Userprefs still apply later: GET company → preference → first in list; then save preference.
 if (function_exists('odata_mimir_enabled') && odata_mimir_enabled()) {
     try {
         $companies = odata_mimir_list_companies(null);
     } catch (Throwable $ignored) {
-        // keep hardcoded fallback if Mímir companies call fails
+        // BC-fallback mislukt of credentials ontbreken: hardcoded lijst blijft staan.
     }
 }
 
