@@ -112,7 +112,7 @@ function odata_mimir_timeout_seconds(): int
     return odata_mimir_timeout_seconds_for_sapi(PHP_SAPI);
 }
 
-function odata_mimir_fail(Exception $exception): never
+function odata_mimir_fail(Exception $exception): void
 {
     odata_mimir_trip($exception);
     throw $exception;
