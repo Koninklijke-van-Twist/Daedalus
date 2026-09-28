@@ -476,7 +476,7 @@ function fetch_app_resources_by_field(
     }
 
     $url = odata_company_url($environment, $company, 'AppResource', [
-        '$select' => 'No,Name,E_Mail,KVT_User_ID',
+        '$select' => 'No',
         '$filter' => $field . " eq '" . odata_quote_string($normalizedValue) . "'",
     ]);
 
@@ -495,7 +495,7 @@ function fetch_user_setup_by_email(string $environment, string $company, string 
     }
 
     $url = odata_company_url($environment, $company, 'AppUserSetup', [
-        '$select' => 'User_ID,Email',
+        '$select' => 'User_ID',
         '$filter' => "Email eq '" . odata_quote_string($email) . "'",
     ]);
 
@@ -515,7 +515,7 @@ function fetch_service_resource_row_by_no(string $environment, string $company, 
     }
 
     $url = odata_company_url($environment, $company, 'AppResource', [
-        '$select' => 'No,Name,E_Mail,Type,Blocked',
+        '$select' => 'No,Name,Type,Blocked',
         '$filter' => "No eq '" . odata_quote_string($value) . "'",
     ]);
 
@@ -543,7 +543,7 @@ function fetch_service_resource_row_by_no(string $environment, string $company, 
 function fetch_service_resources(string $environment, string $company, array $auth): array
 {
     $url = odata_company_url($environment, $company, 'AppResource', [
-        '$select' => 'No,Name,E_Mail,Type,Blocked',
+        '$select' => 'No,Name,E_Mail,Type',
         '$filter' => "Blocked eq false",
         '$orderby' => 'Name asc',
     ]);
@@ -887,7 +887,7 @@ function fetch_workorders_for_resource_by_created_on(
     $operator = $inclusive ? 'ge' : 'gt';
     $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and Created_On " . $operator . ' ' . $normalizedDate;
     $url = odata_company_url($environment, $company, 'AppWerkorders', [
-        '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No,Created_On,Created_At,Created_Date_Time',
+        '$select' => 'No,Task_Code,Task_Description,Status,Main_Entity_Description,Component_Description,Start_Date,Start_Time,End_Time,Created_On,Created_Date_Time',
         '$filter' => $filter,
         '$orderby' => 'Created_On asc,Created_Date_Time asc,No asc',
     ]);
@@ -916,7 +916,7 @@ function fetch_workorders_for_resource_by_date(
     $operator = $inclusive ? 'ge' : 'gt';
     $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and Start_Date " . $operator . ' ' . $normalizedDate;
     $url = odata_company_url($environment, $company, 'AppWerkorders', [
-        '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No,Created_On,Created_At,Created_Date_Time',
+        '$select' => 'No,Task_Code,Task_Description,Status,Main_Entity_Description,Component_Description,Start_Date,Start_Time,End_Time',
         '$filter' => $filter,
         '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
     ]);
@@ -943,7 +943,7 @@ function fetch_workorders_for_resource_on_day(
 
     $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and Start_Date ge " . $normalizedDay . ' and Start_Date le ' . $normalizedDay;
     $url = odata_company_url($environment, $company, 'AppWerkorders', [
-        '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No,Created_On,Created_At,Created_Date_Time',
+        '$select' => 'No,Task_Code,Task_Description,Status,Main_Entity_Description,Component_Description,Start_Date,Start_Time,End_Time',
         '$filter' => $filter,
         '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
     ]);
