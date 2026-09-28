@@ -846,7 +846,7 @@ function fetch_app_resources_by_field(
     }
 
     $url = odata_company_url($environment, $company, 'AppResource', [
-        '$select' => 'No,Name,E_Mail,KVT_User_ID',
+        '$select' => 'No,Name,E_Mail',
         '$filter' => $field . " eq '" . odata_quote_string($normalizedValue) . "'",
     ]);
 
@@ -865,7 +865,7 @@ function fetch_user_setup_by_email(string $environment, string $company, string 
     }
 
     $url = odata_company_url($environment, $company, 'AppUserSetup', [
-        '$select' => 'User_ID,Email',
+        '$select' => 'User_ID',
         '$filter' => "Email eq '" . odata_quote_string($email) . "'",
     ]);
 
@@ -880,7 +880,7 @@ function fetch_app_resources_by_user_id(string $environment, string $company, st
 function fetch_service_resources(string $environment, string $company, array $auth): array
 {
     $url = odata_company_url($environment, $company, 'AppResource', [
-        '$select' => 'No,Name,E_Mail,Type,Blocked',
+        '$select' => 'No,Name,E_Mail,Type',
         '$filter' => "Blocked eq false",
         '$orderby' => 'Name asc',
     ]);
@@ -1958,7 +1958,7 @@ function fetch_workorder_open_counts(string $environment, string $company, array
     }
 
     $url = odata_company_url($environment, $company, 'AppWerkorders', [
-        '$select' => 'No,Resource_No,Status',
+        '$select' => 'Resource_No,Status',
         '$filter' => $filter,
     ]);
 
@@ -2075,7 +2075,7 @@ function fetch_werkorder_visit_contact_by_no(string $environment, string $compan
         $environment,
         $company,
         $workOrderNo,
-        'No,KVT_Primary_Contact_No,KVT_Primary_Contact_Phone_No,Visit_Address,Visit_Address_2,Visit_Post_Code,Visit_City,Visit_Country_Region_Code',
+        'No,KVT_Primary_Contact_No,KVT_Primary_Contact_Phone_No,Visit_Country_Region_Code',
         $auth
     );
 }
@@ -2189,7 +2189,7 @@ function fetch_app_workorders_chunked(
         $filter = implode(' and ', $filterParts);
 
         $url = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
+            '$select' => 'No,Task_Code,Task_Description,Status,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Time,External_Document_No,Job_No',
             '$filter' => $filter,
             '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
         ]);
@@ -2326,7 +2326,7 @@ function fetch_assembly_line_search_blobs(
         }
 
         $url = odata_company_url($environment, $company, 'AssemblageRegels', [
-            '$select' => 'Document_No,Type,No,Description',
+            '$select' => 'Document_No,No,Description',
             '$filter' => $filter,
         ]);
 
@@ -2651,7 +2651,7 @@ function fetch_app_workorder_list_row_by_no(
         $environment,
         $company,
         'AppWerkorders',
-        'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Status_Purchase_Order,Job_No,Job_Task_No',
+        'No,Task_Code,Task_Description,Status,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Time,External_Document_No,Job_No',
         "No eq '" . odata_quote_string($normalizedWorkOrderNo) . "'",
         $auth,
         odata_ttl('workorder_detail')
@@ -2668,7 +2668,7 @@ function fetch_assembly_list_row_by_no(
         $environment,
         $company,
         $assemblyNo,
-        'No,Item_No,Description,Description_2,Starting_Date,Ending_Date,Remaining_Quantity,Quantity,Status,Assigned_User_ID,Unit_of_Measure_Code',
+        'No,Item_No,Description,Starting_Date,Ending_Date,Remaining_Quantity,Status,Unit_of_Measure_Code',
         $auth
     );
 }
@@ -2720,7 +2720,7 @@ function fetch_assembly_orders_chunked(
         $filter = implode(' and ', $filterParts);
 
         $url = odata_company_url($environment, $company, 'AssemblageKop', [
-            '$select' => 'No,Item_No,Description,Description_2,Starting_Date,Ending_Date,Remaining_Quantity,Quantity,Status,Assigned_User_ID,Unit_of_Measure_Code',
+            '$select' => 'No,Item_No,Description,Description_2,Starting_Date,Ending_Date,Remaining_Quantity,Status,Assigned_User_ID,Unit_of_Measure_Code',
             '$filter' => $filter,
             '$orderby' => 'Starting_Date asc,No asc',
         ]);
@@ -2786,7 +2786,7 @@ function fetch_assembly_lines_by_no(
     }
 
     $url = odata_company_url($environment, $company, 'AssemblageRegels', [
-        '$select' => 'Line_No,Avail_Warning,Type,No,Description,Description_2,Unit_of_Measure_Code,Bin_Code,Location_Code,Quantity,Consumed_Quantity,KVT_Expanded_Description,KVT_Extended_Text',
+        '$select' => 'Line_No,Avail_Warning,Type,No,Description,Description_2,Unit_of_Measure_Code,Quantity,Consumed_Quantity,KVT_Expanded_Description,KVT_Extended_Text',
         '$filter' => "Document_No eq '" . odata_quote_string($normalizedAssemblyNo) . "'",
         '$orderby' => 'Line_No asc',
     ]);
@@ -3715,7 +3715,7 @@ try {
 
     if ($selectedWorkOrderNo !== '') {
         $selectedUrl = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Status,Resource_No,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,KVT_Lowest_Present_Status_Mat,KVT_Status_Purchase_Order,Job_No,Job_Task_No,KVT_Memo_Service_Location,KVT_Memo_Component,KVT_Memo,KVT_Memo_Internal_Use_Only',
+            '$select' => 'No,Task_Code,Task_Description,Resource_Name,Main_Entity_Description,Component_No,Component_Description,Start_Date,Start_Time,End_Time,Job_No,KVT_Memo,KVT_Memo_Internal_Use_Only',
             '$filter' => "No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
         ]);
         $selectedRows = odata_get_all($selectedUrl, $auth, odata_ttl('workorder_detail'));
@@ -3776,8 +3776,8 @@ try {
 
             $selectedWorkOrderIsRevision = workorder_is_revision($selectedWorkOrder);
 
-            $revisionLineSelect = 'Line_No,Type,No,Description,Description_2,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,Bin_Code,KVT_Qty_Picked';
-            $standardLineSelect = 'Line_No,Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Completely_Picked,KVT_Qty_Picked,KVT_Expected_Receipt_Date,LVS_Purchase_Order_No,LVS_Outstanding_Qty_Base,Planning_Date,LVS_Vendor_Name,LVS_Supply_from';
+            $revisionLineSelect = 'Line_No,Type,No,Description,Description_2,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Qty_Picked';
+            $standardLineSelect = 'Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Expected_Receipt_Date';
             $linesUrl = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
                 '$select' => $selectedWorkOrderIsRevision ? $revisionLineSelect : $standardLineSelect,
                 '$filter' => "LVS_Work_Order_No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
@@ -3833,7 +3833,7 @@ try {
             $environment,
             $company,
             $selectedAssemblyNo,
-            'No,Item_No,Description,Description_2,Starting_Date,Ending_Date,Remaining_Quantity,Quantity,Status,Assigned_User_ID,Unit_of_Measure_Code',
+            'No,Item_No,Description,Starting_Date,Ending_Date,Remaining_Quantity,Status,Unit_of_Measure_Code',
             $auth
         );
         if (!empty($selectedAssemblyOrderRow)) {
