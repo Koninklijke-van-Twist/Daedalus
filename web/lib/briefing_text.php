@@ -120,6 +120,10 @@ function briefing_known_names_pattern(array $knownNames): string
  */
 function briefing_scrub_pii(string $text, array $knownNames = []): string
 {
+    // Ongeldige UTF-8 laat /u-regexen falen (null/false); dan zou er niets gefilterd worden.
+    if (!mb_check_encoding($text, 'UTF-8')) {
+        $text = mb_scrub($text, 'UTF-8');
+    }
     $text = briefing_normalize_whitespace($text);
     if ($text === '') {
         return '';

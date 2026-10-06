@@ -164,6 +164,16 @@ function daily_briefing_fetch_company_workorders(string $environment, string $co
 }
 
 /**
+ * Foutmelding voor de JSON-output: zonder URLs (interne hostnamen/querystrings) en ingekort.
+ */
+function daily_briefing_safe_message(Throwable $throwable): string
+{
+    $message = preg_replace('/https?:\/\/\S+/i', '[url]', $throwable->getMessage()) ?? '';
+
+    return mb_substr(trim($message), 0, 200, 'UTF-8');
+}
+
+/**
  * Dezelfde monteurs als de dagmail: gebruikers in web/cache/users met notificaties én dagoverzicht aan,
  * waarvan de resource een actieve persoon is die bij hun e-mailadres hoort.
  *
@@ -217,7 +227,7 @@ function daily_briefing_subscriber_resources(string $environment, array $auth, ?
                 'email' => $email,
                 'company' => $company,
                 'workorders' => null,
-                'error' => 'Business Central niet bereikbaar: ' . $throwable->getMessage(),
+                'error' => 'Business Central niet bereikbaar: ' . daily_briefing_safe_message($throwable),
             ];
         }
     }
@@ -262,7 +272,7 @@ function daily_briefing_all_resources(string $environment, array $auth, array $c
                 ];
             }
         } catch (Throwable $throwable) {
-            $errors[] = ['company' => $company, 'message' => 'Business Central niet bereikbaar: ' . $throwable->getMessage()];
+            $errors[] = ['company' => $company, 'message' => 'Business Central niet bereikbaar: ' . daily_briefing_safe_message($throwable)];
         }
     }
 
@@ -343,8 +353,19 @@ function daily_briefing_build(array $options): array
         $resources = daily_briefing_subscriber_resources($environment, $auth, $options['company'], $day);
     }
 
+    // Business Central helemaal onbereikbaar → 502. scope=all: elk gevraagd bedrijf faalde;
+    // scope=subscribers: voor elke monteur faalde BC. Gedeeltelijke fouten blijven 200.
     if ($resources === [] && $errors !== [] && count($errors) === count($companies)) {
         return ['status' => 502, 'body' => ['ok' => false, 'error' => 'Business Central niet bereikbaar.', 'errors' => $errors]];
+    }
+    if ($options['scope'] !== 'all' && $resources !== []) {
+        $failed = array_values(array_filter($resources, static fn(array $resource): bool => $resource['error'] !== null));
+        if (count($failed) === count($resources)) {
+            return ['status' => 502, 'body' => ['ok' => false, 'error' => 'Business Central niet bereikbaar.', 'errors' => array_map(
+                static fn(array $resource): array => ['company' => $resource['company'], 'resource_no' => $resource['resource_no'], 'message' => (string) $resource['error']],
+                $failed
+            )]];
+        }
     }
 
     $sharepoint = [

@@ -145,11 +145,24 @@ $auth = $auth_list[$environment];
 $baseUrl = 'https://bc.invalid:7148/';
 $reportMail = ['subject_prefix' => 'Daedalus', 'smtp' => ['host' => '']];
 $briefingApiKeys = ['test-key-0123456789abcdef', 'tweede-sleutel-abcdefghijkl'];
-$graphTenantId = 'tenant-test';
-$graphClientId = 'client-test';
-$graphClientSecret = 'secret-test-should-not-leak';
-$graphSiteHostname = 'kvtnl.sharepoint.com';
-$graphSitePath = '/sites/KVTAlgemeen';
+// Zelfde vorm als Clio's auth.php; site_id/drive_id/list_id zijn van Clio's transcript-site en moeten genegeerd worden.
+$sharepointSettings = [
+    'site_id' => 'clio.example,clio-transcript-site',
+    'drive_id' => 'clio-transcript-drive',
+    'list_id' => 'clio-list',
+    'upload_folder' => '',
+    'status_field' => 'Transcript',
+    'access_token' => '',
+    'tenant_id' => 'tenant-test',
+    'client_id' => 'client-test',
+    'client_secret' => 'secret-test-should-not-leak',
+    'token_scope' => 'https://graph.microsoft.com/.default',
+    'token_url' => '',
+    'verify_ssl' => true,
+    'ca_bundle' => '',
+];
+$briefingSiteHostname = 'kvtnl.sharepoint.com';
+$briefingSitePath = '/sites/KVTAlgemeen';
 $briefingNotesFolder = 'General/Daedalus/Aandachtspunten';
 $briefingPdftotextPath = '/bestaat/niet/pdftotext';
 PHP);
@@ -200,6 +213,9 @@ $GLOBALS['DAEDALUS_ODATA_BC_FETCH'] = static function (string $url, array $auth,
     $filter = (string) ($query['$filter'] ?? '');
     $select = (string) ($query['$select'] ?? '');
     $bcCalls[] = $entity . ' ' . $filter;
+    if (!empty($GLOBALS['TEST_BC_DOWN'])) {
+        throw new RuntimeException('HTTP 503 bij https://bc.invalid:7148/geheim?$filter=x');
+    }
     if ($entity === 'Werkorders') {
         fail('De kaartpagina Werkorders mag niet gelezen worden.');
     }
@@ -278,7 +294,9 @@ $GLOBALS['DAEDALUS_GRAPH_TRANSPORT'] = static function (array $request) use (&$g
     if (strpos($url, 'https://login.microsoftonline.com/tenant-test/oauth2/v2.0/token') === 0) {
         $graph['logins']++;
         check(strpos((string) $request['body'], 'grant_type=client_credentials') !== false, 'token-aanvraag gebruikt client credentials');
-        return $json(200, ['access_token' => 'tok-123', 'expires_in' => 3599, 'token_type' => 'Bearer']);
+        check(strpos((string) $request['body'], 'scope=' . rawurlencode('https://graph.microsoft.com/.default')) !== false, 'token-aanvraag gebruikt token_scope');
+        check(($request['verify_ssl'] ?? null) === true, 'verify_ssl uit $sharepointSettings doorgegeven');
+        return $json(200, ['access_token' => $graph['token'] ?? 'tok-123', 'expires_in' => 3599, 'token_type' => 'Bearer']);
     }
 
     if (strpos($headers, 'Authorization: Bearer tok-123') === false) {
@@ -387,6 +405,11 @@ foreach (['10000001', '130H', 'WO2600001', 'filter vervangen'] as $keep) {
     check(strpos($scrubbed, $keep) !== false, 'inhoud behouden: ' . $keep);
 }
 same(['opmerkingen' => "Tankinhoud bedraagt minder dan 40%, advies bijvullen", 'storingsdiagnose' => ''], briefing_pdf_sections("Situatie bij vertrek\nVoor eventuele aanbevelingen zie “opmerkingen”.\nOpmerkingen\nTankinhoud bedraagt minder dan 40%, advies bijvullen\nHandtekening contactpersoon op locatie\nnaam:\nTestmonteur, Henk"), 'pdf-secties: alleen Opmerkingen, geen handtekening');
+
+// Ongeldige UTF-8 mag het filter niet uitschakelen.
+$scrubbedInvalid = briefing_scrub_pii("Bel 06-12345678 of mail jan@example.com \xC3\x28 ok");
+check(strpos($scrubbedInvalid, '12345678') === false && strpos($scrubbedInvalid, 'jan@example.com') === false, 'PII-filter werkt ook bij ongeldige UTF-8');
+check(mb_check_encoding($scrubbedInvalid, 'UTF-8'), 'output is geldige UTF-8');
 
 // ---------------------------------------------------------------------------
 // 5. Markdown → HTML (escaping)
@@ -503,13 +526,13 @@ graph_set_deadline(0);
 same('budget_exceeded', $budget['status'], 'budget op → budget_exceeded');
 
 // Zonder Graph-config → not_configured.
-$savedTenant = $GLOBALS['graphTenantId'];
-$GLOBALS['graphTenantId'] = '';
+$savedTenant = $GLOBALS['sharepointSettings']['tenant_id'];
+$GLOBALS['sharepointSettings']['tenant_id'] = '';
 $noGraph = call_endpoint(['date' => '2026-10-07']);
 same(200, $noGraph['status'], 'zonder Graph 200');
 same('not_configured', find_workorder($noGraph['body'], 'WO2610001')['history_status'], 'history_status not_configured');
 same(false, $noGraph['body']['sharepoint']['configured'], 'sharepoint.configured false');
-$GLOBALS['graphTenantId'] = $savedTenant;
+$GLOBALS['sharepointSettings']['tenant_id'] = $savedTenant;
 
 // Drive-keuze: webUrl-segment gaat voor weergavenaam (KVTAlgemeen heeft ook een lege "Gedeelde Documenten").
 $drives = [
@@ -518,6 +541,49 @@ $drives = [
 ];
 same('goed', graph_pick_drive($drives, 'Gedeelde documenten')['id'], 'drive op webUrl-segment');
 same('goed', graph_pick_drive($drives, 'Documenten')['id'], 'drive op weergavenaam als fallback');
+
+// BC volledig onbereikbaar → 502 (subscribers én all), zonder URLs in de output.
+$GLOBALS['TEST_BC_DOWN'] = true;
+$bcDown = call_endpoint(['date' => '2026-11-03']);
+same(502, $bcDown['status'], 'BC down (subscribers) → 502');
+check(strpos(json_encode($bcDown['body']), 'bc.invalid') === false, 'geen BC-URL in foutmelding');
+check(strpos((string) ($bcDown['body']['errors'][0]['message'] ?? ''), '[url]') !== false, 'URL vervangen door [url]');
+same(502, call_endpoint(['date' => '2026-11-03', 'scope' => 'all', 'company' => 'Koninklijke van Twist'])['status'], 'BC down (all) → 502');
+$GLOBALS['TEST_BC_DOWN'] = false;
+
+// Clio-config: transcript-site/drive uit $sharepointSettings nooit gebruikt.
+$clioCalls = array_filter($graph['calls'], static fn(string $call): bool => strpos($call, 'clio-') !== false);
+same([], array_values($clioCalls), "Clio's site_id/drive_id worden genegeerd");
+
+// Token-claims (zelfde controle als Clio): JWT zonder roles → nette fout, met roles → ok.
+$jwt = static fn(array $claims): string => 'eyJhbGciOiJub25lIn0.' . rtrim(strtr(base64_encode(json_encode($claims)), '+/', '-_'), '=') . '.sig';
+$validated = true;
+try {
+    graph_validate_token_claims($jwt(['aud' => 'https://graph.microsoft.com', 'roles' => ['Sites.Read.All']]));
+} catch (RuntimeException $e) {
+    $validated = false;
+}
+check($validated, 'token met roles geaccepteerd');
+$rejected = '';
+try {
+    graph_validate_token_claims($jwt(['aud' => 'https://graph.microsoft.com']));
+} catch (RuntimeException $e) {
+    $rejected = $e->getMessage();
+}
+check(strpos($rejected, 'roles') !== false, 'token zonder roles geweigerd');
+same(['roles' => ['Sites.Selected']], graph_jwt_payload($jwt(['roles' => ['Sites.Selected']])), 'jwt-payload gedecodeerd');
+
+// token_url-override en token_scope uit $sharepointSettings.
+$savedSettings = $GLOBALS['sharepointSettings'];
+$GLOBALS['sharepointSettings']['token_url'] = 'https://login.microsoftonline.com/tenant-test/oauth2/v2.0/token?override=1';
+$GLOBALS['sharepointSettings']['client_secret'] = 'ander-geheim';
+$loginsBefore = $graph['logins'];
+graph_access_token();
+same($loginsBefore + 1, $graph['logins'], 'nieuwe secret → nieuw token');
+check(strpos((string) end($graph['calls']), 'override=1') !== false, 'token_url-override gebruikt');
+$GLOBALS['sharepointSettings'] = $savedSettings;
+same('kvtnl.sharepoint.com', graph_config()['site_hostname'], 'site-hostname uit $briefingSiteHostname');
+same('/sites/KVTAlgemeen', graph_config()['site_path'], 'site-pad uit $briefingSitePath');
 
 // Mímir-optiewaarden.
 check(daily_briefing_option_matches('Geannuleerd', ['Cancelled', 'Geannuleerd']), 'Geannuleerd = geannuleerd');
@@ -536,12 +602,12 @@ same($legacyHtml, build_email_html('Koninklijke van Twist', '1001', 'Testmonteur
 check(strpos($legacyHtml, 'Aandachtspunten') === false, 'zonder notes geen blok');
 
 // Zonder Graph-config: geen calls, lege array.
-$GLOBALS['graphTenantId'] = '';
+$GLOBALS['sharepointSettings']['tenant_id'] = '';
 briefing_notes_reset_state();
 $callsBefore = count($graph['calls']);
 same([], briefing_attention_notes_html(['WO2600100'], '2026-10-07'), 'zonder Graph-config geen aandachtspunten');
 same($callsBefore, count($graph['calls']), 'zonder Graph-config geen Graph-calls');
-$GLOBALS['graphTenantId'] = $savedTenant;
+$GLOBALS['sharepointSettings']['tenant_id'] = $savedTenant;
 
 // Met Graph: bestand voor WO2600100, niet voor WO2600101 (.txt telt niet).
 briefing_notes_reset_state();

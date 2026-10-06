@@ -2,14 +2,27 @@
 /**
  * Minimale, alleen-lezen Microsoft Graph-client (client credentials) voor SharePoint.
  *
- * Config (web/auth.php, niet in git):
- *   $graphTenantId, $graphClientId, $graphClientSecret
- *   $graphSiteHostname = 'kvtnl.sharepoint.com';
- *   $graphSitePath     = '/sites/KVTAlgemeen';
- *   $graphDriveName    = '';   // optioneel; leeg = standaard documentbibliotheek van de site
+ * Config (web/auth.php, niet in git). De app-gegevens zijn dezelfde als in Clio
+ * ($sharepointSettings, zelfde sleutels), zodat de bestaande Clio-waarden 1-op-1 kunnen worden overgenomen:
+ *   $sharepointSettings = [
+ *       'tenant_id'     => '…',
+ *       'client_id'     => '…',
+ *       'client_secret' => '…',
+ *       'token_scope'   => 'https://graph.microsoft.com/.default', // optioneel
+ *       'token_url'     => '',    // optioneel
+ *       'verify_ssl'    => true,  // optioneel
+ *       'ca_bundle'     => '',    // optioneel
+ *   ];
+ * Net als in Clio vallen ontbrekende sleutels terug op SHAREPOINT_TENANT_ID / SHAREPOINT_CLIENT_ID /
+ * SHAREPOINT_CLIENT_SECRET / SHAREPOINT_TOKEN_SCOPE / SHAREPOINT_TOKEN_URL / SHAREPOINT_VERIFY_SSL /
+ * SHAREPOINT_CA_BUNDLE uit de omgeving.
+ * Clio's 'site_id'/'drive_id'/'list_id'/'upload_folder'/'status_field'/'access_token' worden bewust
+ * genegeerd: die horen bij Clio's transcript-site. De site voor Daedalus staat apart:
+ *   $briefingSiteHostname = 'kvtnl.sharepoint.com';
+ *   $briefingSitePath     = '/sites/KVTAlgemeen';
+ *   $briefingDriveName    = '';   // optioneel; leeg = standaard documentbibliotheek van de site
  *
- * De Entra-app heeft alleen Sites.Selected (application) nodig, met een read-grant op de site.
- * Alle aanroepen zijn GET (plus de token-POST naar login.microsoftonline.com).
+ * Daedalus doet alleen GET-aanroepen (plus de token-POST); lezen op de site is genoeg.
  *
  * Tests injecteren een transport via $GLOBALS['DAEDALUS_GRAPH_TRANSPORT']:
  *   function (array $request): array
@@ -46,15 +59,38 @@ function graph_config(): array
         return is_string($value) && trim($value) !== '' ? trim($value) : $default;
     };
 
-    $sitePath = '/' . trim($read('graphSitePath', '/sites/KVTAlgemeen'), '/');
+    $settings = is_array($GLOBALS['sharepointSettings'] ?? null) ? $GLOBALS['sharepointSettings'] : [];
+    $setting = static function (string $key, string $envName, string $default = '') use ($settings): string {
+        if (array_key_exists($key, $settings) && is_scalar($settings[$key])) {
+            $value = trim((string) $settings[$key]);
+        } else {
+            $env = getenv($envName);
+            $value = $env !== false ? trim((string) $env) : '';
+        }
+
+        return $value !== '' ? $value : $default;
+    };
+
+    $verifySsl = $settings['verify_ssl'] ?? null;
+    if ($verifySsl === null) {
+        $env = getenv('SHAREPOINT_VERIFY_SSL');
+        $verifySsl = $env !== false ? $env : true;
+    }
+    if (!is_bool($verifySsl)) {
+        $verifySsl = !in_array(strtolower(trim((string) $verifySsl)), ['0', 'false', 'no', 'off'], true);
+    }
 
     return [
-        'tenant_id' => $read('graphTenantId'),
-        'client_id' => $read('graphClientId'),
-        'client_secret' => $read('graphClientSecret'),
-        'site_hostname' => $read('graphSiteHostname', 'kvtnl.sharepoint.com'),
-        'site_path' => $sitePath,
-        'drive_name' => $read('graphDriveName'),
+        'tenant_id' => $setting('tenant_id', 'SHAREPOINT_TENANT_ID'),
+        'client_id' => $setting('client_id', 'SHAREPOINT_CLIENT_ID'),
+        'client_secret' => $setting('client_secret', 'SHAREPOINT_CLIENT_SECRET'),
+        'token_scope' => $setting('token_scope', 'SHAREPOINT_TOKEN_SCOPE', 'https://graph.microsoft.com/.default'),
+        'token_url' => $setting('token_url', 'SHAREPOINT_TOKEN_URL'),
+        'verify_ssl' => $verifySsl,
+        'ca_bundle' => $setting('ca_bundle', 'SHAREPOINT_CA_BUNDLE'),
+        'site_hostname' => $read('briefingSiteHostname', 'kvtnl.sharepoint.com'),
+        'site_path' => '/' . trim($read('briefingSitePath', '/sites/KVTAlgemeen'), '/'),
+        'drive_name' => $read('briefingDriveName'),
     ];
 }
 
@@ -62,6 +98,43 @@ function graph_is_configured(): bool
 {
     $config = graph_config();
     return $config['tenant_id'] !== '' && $config['client_id'] !== '' && $config['client_secret'] !== '';
+}
+
+/**
+ * Payload van een JWT (zonder verificatie, alleen voor diagnose); [] als het geen JWT is.
+ */
+function graph_jwt_payload(string $token): array
+{
+    $parts = explode('.', $token);
+    if (count($parts) !== 3) {
+        return [];
+    }
+
+    $json = base64_decode(strtr($parts[1], '-_', '+/') . str_repeat('=', (4 - strlen($parts[1]) % 4) % 4), true);
+    $payload = is_string($json) ? json_decode($json, true) : null;
+
+    return is_array($payload) ? $payload : [];
+}
+
+/**
+ * Zelfde controle als Clio (validateGraphTokenClaims): token moet voor Graph zijn en rollen hebben.
+ */
+function graph_validate_token_claims(string $token): void
+{
+    $payload = graph_jwt_payload($token);
+    if ($payload === []) {
+        return;
+    }
+
+    $audience = (string) ($payload['aud'] ?? '');
+    if ($audience !== '' && $audience !== 'https://graph.microsoft.com' && $audience !== '00000003-0000-0000-c000-000000000000') {
+        throw new RuntimeException('Graph-token is niet voor Microsoft Graph uitgegeven (controleer token_scope).');
+    }
+
+    $roles = $payload['roles'] ?? [];
+    if ((!is_array($roles) || $roles === []) && trim((string) ($payload['scp'] ?? '')) === '') {
+        throw new RuntimeException('Graph-token bevat geen rechten (roles); controleer de API-permissies en admin-consent van de app.');
+    }
 }
 
 /**
@@ -117,6 +190,8 @@ function graph_curl_transport(array $request): array
         CURLOPT_HTTPHEADER => is_array($request['headers'] ?? null) ? $request['headers'] : [],
         CURLOPT_USERAGENT => 'Daedalus-Briefing/1.0',
         CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
+        CURLOPT_SSL_VERIFYPEER => ($request['verify_ssl'] ?? true) !== false,
+        CURLOPT_SSL_VERIFYHOST => ($request['verify_ssl'] ?? true) !== false ? 2 : 0,
         CURLOPT_HEADERFUNCTION => static function ($curl, string $line) use (&$responseHeaders): int {
             $parts = explode(':', $line, 2);
             if (count($parts) === 2) {
@@ -135,6 +210,10 @@ function graph_curl_transport(array $request): array
             return ($downloadTotal > $maxBytes || $downloaded > $maxBytes) ? 1 : 0;
         };
     }
+    $caBundle = (string) ($request['ca_bundle'] ?? '');
+    if ($caBundle !== '' && is_file($caBundle)) {
+        $options[CURLOPT_CAINFO] = $caBundle;
+    }
     curl_setopt_array($ch, $options);
 
     $body = curl_exec($ch);
@@ -152,6 +231,11 @@ function graph_curl_transport(array $request): array
 
 function graph_send(array $request): array
 {
+    if (!array_key_exists('verify_ssl', $request) || !array_key_exists('ca_bundle', $request)) {
+        $config = graph_config();
+        $request += ['verify_ssl' => $config['verify_ssl'], 'ca_bundle' => $config['ca_bundle']];
+    }
+
     $transport = $GLOBALS['DAEDALUS_GRAPH_TRANSPORT'] ?? null;
     $response = is_callable($transport) ? $transport($request) : graph_curl_transport($request);
     if (!is_array($response)) {
@@ -195,7 +279,7 @@ function graph_error_summary(array $response): string
 
 function graph_token_cache_key(array $config): string
 {
-    return 'graph_token|' . $config['tenant_id'] . '|' . $config['client_id'] . '|' . sha1($config['client_secret']);
+    return 'graph_token|' . $config['tenant_id'] . '|' . $config['client_id'] . '|' . sha1($config['client_secret'] . '|' . $config['token_scope']);
 }
 
 function &graph_memory_token(): array
@@ -225,12 +309,12 @@ function graph_access_token(int $timeout = GRAPH_DEFAULT_TIMEOUT): string
 
     $response = graph_send([
         'method' => 'POST',
-        'url' => 'https://login.microsoftonline.com/' . rawurlencode($config['tenant_id']) . '/oauth2/v2.0/token',
+        'url' => $config['token_url'] !== '' ? $config['token_url'] : 'https://login.microsoftonline.com/' . rawurlencode($config['tenant_id']) . '/oauth2/v2.0/token',
         'headers' => ['Content-Type: application/x-www-form-urlencoded', 'Accept: application/json'],
         'body' => http_build_query([
             'client_id' => $config['client_id'],
             'client_secret' => $config['client_secret'],
-            'scope' => 'https://graph.microsoft.com/.default',
+            'scope' => $config['token_scope'],
             'grant_type' => 'client_credentials',
         ], '', '&'),
         'timeout' => graph_effective_timeout($timeout),
@@ -240,6 +324,8 @@ function graph_access_token(int $timeout = GRAPH_DEFAULT_TIMEOUT): string
     if ($response['status'] !== 200 || !is_array($decoded) || !is_string($decoded['access_token'] ?? null)) {
         throw new RuntimeException('Graph-token ophalen mislukt: ' . graph_error_summary($response) . '.');
     }
+
+    graph_validate_token_claims($decoded['access_token']);
 
     $expiresAt = time() + max(60, (int) ($decoded['expires_in'] ?? 3599)) - 120;
     $memory = ['key' => $cacheKey, 'token' => $decoded['access_token'], 'expires_at' => $expiresAt];
@@ -333,8 +419,8 @@ function graph_normalize_name(string $value): string
 }
 
 /**
- * Kiest de drive. Zonder $graphDriveName: de standaard documentbibliotheek van de site.
- * Met $graphDriveName: eerst match op het laatste pad-segment van webUrl (uniek binnen een site,
+ * Kiest de drive. Zonder $briefingDriveName: de standaard documentbibliotheek van de site.
+ * Met $briefingDriveName: eerst match op het laatste pad-segment van webUrl (uniek binnen een site,
  * bijv. 'Gedeelde documenten'), daarna op de weergavenaam. Let op: op KVTAlgemeen heet de
  * standaardbibliotheek 'Documenten' (webUrl .../Gedeelde%20documenten) en bestaat er óók een
  * lege bibliotheek met weergavenaam 'Gedeelde Documenten'. Daarom gaat webUrl voor.

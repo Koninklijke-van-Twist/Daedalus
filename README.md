@@ -21,18 +21,32 @@ Two parts, both off until configured in `web/auth.php`:
 
 ### Configuration (`web/auth.php`, never committed)
 
-```php
-// Endpoint access: one long random key per client (e.g. bin2hex(random_bytes(32)))
-$briefingApiKeys = ['copilot-flow-…'];
+Daedalus **reuses Clio's Entra app**. Copy the `$sharepointSettings` block from Clio's `auth.php` unchanged, using the same keys.
 
-// Microsoft Graph: Entra app, client credentials, application permission Sites.Selected
-$graphTenantId     = '…';
-$graphClientId     = '…';
-$graphClientSecret = '…';
-$graphSiteHostname = 'kvtnl.sharepoint.com';
-$graphSitePath     = '/sites/KVTAlgemeen';
-$graphDriveName    = '';   // empty = the site's default library ("Gedeelde documenten"), recommended
-$briefingNotesFolder = 'General/Daedalus/Aandachtspunten';
+Daedalus uses these keys:
+- `tenant_id`, `client_id`, `client_secret`
+- optional: `token_scope`, `token_url`, `verify_ssl`, `ca_bundle`
+
+Like in Clio, a missing key falls back to the matching environment variable (`SHAREPOINT_TENANT_ID`, …).
+
+Clio's `site_id`, `drive_id`, `list_id`, `upload_folder`, `status_field` and `access_token` belong to Clio's transcript site. Daedalus ignores them, so the block can be copied as is. The KVTAlgemeen site is configured separately:
+
+```php
+// Same Entra app as Clio (copy from Clio's auth.php)
+$sharepointSettings = [
+    'tenant_id'     => '…',
+    'client_id'     => '…',
+    'client_secret' => '…',
+    'token_scope'   => 'https://graph.microsoft.com/.default', // optional
+    // 'site_id', 'drive_id', 'list_id', … from Clio may stay; ignored here
+];
+
+// Daedalus-specific
+$briefingApiKeys      = ['copilot-flow-…'];   // one long random key per client (bin2hex(random_bytes(32)))
+$briefingSiteHostname = 'kvtnl.sharepoint.com'; // default
+$briefingSitePath     = '/sites/KVTAlgemeen';   // default
+$briefingDriveName    = '';   // empty = the site's default library ("Gedeelde documenten"), recommended
+$briefingNotesFolder  = 'General/Daedalus/Aandachtspunten';
 
 // Optional
 $briefingIndexPath          = 'General/servicerapporten.xlsx';
@@ -42,11 +56,15 @@ $briefingPdftotextPath      = '/usr/bin/pdftotext'; // PDF fallback; auto-detect
 $briefingCompanies          = ['Koninklijke van Twist', 'Hunter van Twist', 'KVT Gas'];
 ```
 
-KVTAlgemeen has a second, empty library whose display name is "Gedeelde Documenten". Leave `$graphDriveName` empty, or set it to `'Gedeelde documenten'`: the name is matched against the library URL first (`…/Gedeelde%20documenten`), so you still get the real library.
+KVTAlgemeen has a second, empty library whose display name is "Gedeelde Documenten". Leave `$briefingDriveName` empty, or set it to `'Gedeelde documenten'`: the name is matched against the library URL first (`…/Gedeelde%20documenten`), so you still get the real library.
 
-The Entra app only needs **read** access, and only on KVTAlgemeen:
-- an application permission `Sites.Selected` (Microsoft Graph) with admin consent
-- a site grant: `POST https://graph.microsoft.com/v1.0/sites/{site-id}/permissions` with `{"roles":["read"],"grantedToIdentities":[{"application":{"id":"<client-id>","displayName":"Daedalus briefing"}}]}`, executed by an admin, for example with Graph Explorer and `Sites.FullControl.All`
+**Permissions.** Daedalus only reads, but what it can read depends on the permissions of Clio's app:
+- **Tenant-wide application permission** (`Sites.Read.All`, `Sites.ReadWrite.All`, `Files.Read.All` or `Files.ReadWrite.All`): KVTAlgemeen is already covered and nothing has to change. Clio documents `Sites.ReadWrite.All` or `Files.ReadWrite.All`.
+- **`Sites.Selected` only**: an admin has to add a read grant on KVTAlgemeen:
+  1. `GET https://graph.microsoft.com/v1.0/sites/kvtnl.sharepoint.com:/sites/KVTAlgemeen` and take the `id`.
+  2. `POST https://graph.microsoft.com/v1.0/sites/{site-id}/permissions` with body `{"roles":["read"],"grantedToIdentities":[{"application":{"id":"<client_id>","displayName":"Clio"}}]}`. Run this as an admin, for example in Graph Explorer with `Sites.FullControl.All`.
+
+You can check which case applies in Entra under App registrations → (Clio app) → API permissions. If the token has no `roles` at all, Daedalus reports *"Graph-token bevat geen rechten (roles)"*, the same check Clio does.
 
 ### Endpoint
 
@@ -66,7 +84,13 @@ Responses:
 - `401` when the key is missing or wrong, or when no keys are configured
 - `405` for anything but GET
 - `400` for invalid parameters
-- `502` when Business Central can't be reached for any company
+- `502` when Business Central can't be reached at all:
+  - with `scope=all`: for every requested company
+  - with `scope=subscribers`: for every engineer
+
+A partial Business Central failure still returns `200`:
+- with `scope=subscribers`: an `error` field on each affected resource
+- with `scope=all`: a top-level `errors` list
 
 Work orders come from the `AppWerkorders` page only, never from `Werkorders`. Cancelled work orders are skipped.
 
