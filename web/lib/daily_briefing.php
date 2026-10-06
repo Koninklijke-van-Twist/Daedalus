@@ -164,13 +164,14 @@ function daily_briefing_fetch_company_workorders(string $environment, string $co
 }
 
 /**
- * Foutmelding voor de JSON-output: zonder URLs (interne hostnamen/querystrings) en ingekort.
+ * Vaste foutmelding voor de JSON-output; de exceptiontekst gaat alleen naar de serverlog.
  */
 function daily_briefing_safe_message(Throwable $throwable): string
 {
-    $message = preg_replace('/https?:\/\/\S+/i', '[url]', $throwable->getMessage()) ?? '';
+    // Details (kunnen response-bodies van BC bevatten) alleen in de serverlog, nooit in de JSON.
+    error_log('[Daedalus] daily_briefing BC-fout: ' . $throwable->getMessage());
 
-    return mb_substr(trim($message), 0, 200, 'UTF-8');
+    return 'ophalen van gegevens is mislukt.';
 }
 
 /**

@@ -21,6 +21,7 @@
  *   $briefingSiteHostname = 'kvtnl.sharepoint.com';
  *   $briefingSitePath     = '/sites/KVTAlgemeen';
  *   $briefingDriveName    = '';   // optioneel; leeg = standaard documentbibliotheek van de site
+ *   $briefingDriveId      = '';   // optioneel; vaste drive-id → geen site-lookup (Files.Read.All volstaat)
  *
  * Daedalus doet alleen GET-aanroepen (plus de token-POST); lezen op de site is genoeg.
  *
@@ -91,6 +92,7 @@ function graph_config(): array
         'site_hostname' => $read('briefingSiteHostname', 'kvtnl.sharepoint.com'),
         'site_path' => '/' . trim($read('briefingSitePath', '/sites/KVTAlgemeen'), '/'),
         'drive_name' => $read('briefingDriveName'),
+        'drive_id' => $read('briefingDriveId'),
     ];
 }
 
@@ -456,6 +458,11 @@ function graph_pick_drive(array $drives, string $wantedName): ?array
 function graph_drive_id(int $timeout = GRAPH_DEFAULT_TIMEOUT): string
 {
     $config = graph_config();
+    if ($config['drive_id'] !== '') {
+        // Vaste drive-id: geen site-lookup nodig (die vereist Sites.*; Files.* volstaat dan).
+        return $config['drive_id'];
+    }
+
     $cacheKey = 'graph_drive|' . $config['site_hostname'] . '|' . strtolower($config['site_path']) . '|' . graph_normalize_name($config['drive_name']);
     $cached = briefing_cache_get($cacheKey);
     if (is_string($cached) && $cached !== '') {

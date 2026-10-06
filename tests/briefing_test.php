@@ -547,7 +547,8 @@ $GLOBALS['TEST_BC_DOWN'] = true;
 $bcDown = call_endpoint(['date' => '2026-11-03']);
 same(502, $bcDown['status'], 'BC down (subscribers) → 502');
 check(strpos(json_encode($bcDown['body']), 'bc.invalid') === false, 'geen BC-URL in foutmelding');
-check(strpos((string) ($bcDown['body']['errors'][0]['message'] ?? ''), '[url]') !== false, 'URL vervangen door [url]');
+check(strpos(json_encode($bcDown['body']), 'HTTP 503') === false, 'geen exceptiontekst in foutmelding');
+same('Business Central niet bereikbaar: ophalen van gegevens is mislukt.', (string) ($bcDown['body']['errors'][0]['message'] ?? ''), 'vaste foutmelding');
 same(502, call_endpoint(['date' => '2026-11-03', 'scope' => 'all', 'company' => 'Koninklijke van Twist'])['status'], 'BC down (all) → 502');
 $GLOBALS['TEST_BC_DOWN'] = false;
 
@@ -584,6 +585,13 @@ check(strpos((string) end($graph['calls']), 'override=1') !== false, 'token_url-
 $GLOBALS['sharepointSettings'] = $savedSettings;
 same('kvtnl.sharepoint.com', graph_config()['site_hostname'], 'site-hostname uit $briefingSiteHostname');
 same('/sites/KVTAlgemeen', graph_config()['site_path'], 'site-pad uit $briefingSitePath');
+
+// Vaste $briefingDriveId: geen site-lookup (werkt dan ook met alleen Files.Read(Write).All).
+$GLOBALS['briefingDriveId'] = 'drive-1';
+$callsBefore = count($graph['calls']);
+same('drive-1', graph_drive_id(), 'drive-id uit $briefingDriveId');
+same($callsBefore, count($graph['calls']), 'geen site-/drive-lookup met vaste drive-id');
+unset($GLOBALS['briefingDriveId']);
 
 // Mímir-optiewaarden.
 check(daily_briefing_option_matches('Geannuleerd', ['Cancelled', 'Geannuleerd']), 'Geannuleerd = geannuleerd');

@@ -46,6 +46,7 @@ $briefingApiKeys      = ['copilot-flow-…'];   // one long random key per clien
 $briefingSiteHostname = 'kvtnl.sharepoint.com'; // default
 $briefingSitePath     = '/sites/KVTAlgemeen';   // default
 $briefingDriveName    = '';   // empty = the site's default library ("Gedeelde documenten"), recommended
+$briefingDriveId      = '';   // optional fixed drive ID: skips the site lookup (needed if the app only has Files.*)
 $briefingNotesFolder  = 'General/Daedalus/Aandachtspunten';
 
 // Optional
@@ -59,8 +60,13 @@ $briefingCompanies          = ['Koninklijke van Twist', 'Hunter van Twist', 'KVT
 KVTAlgemeen has a second, empty library whose display name is "Gedeelde Documenten". Leave `$briefingDriveName` empty, or set it to `'Gedeelde documenten'`: the name is matched against the library URL first (`…/Gedeelde%20documenten`), so you still get the real library.
 
 **Permissions.** Daedalus only reads, but what it can read depends on the permissions of Clio's app:
-- **Tenant-wide application permission** (`Sites.Read.All`, `Sites.ReadWrite.All`, `Files.Read.All` or `Files.ReadWrite.All`): KVTAlgemeen is already covered and nothing has to change. Clio documents `Sites.ReadWrite.All` or `Files.ReadWrite.All`.
-- **`Sites.Selected` only**: an admin has to add a read grant on KVTAlgemeen:
+- **`Sites.Read.All` or `Sites.ReadWrite.All`** (application permission). Clio documents `Sites.ReadWrite.All` or `Files.ReadWrite.All`, so this is the likely case:
+  - KVTAlgemeen is already covered and nothing has to change.
+- **Only `Files.Read.All` or `Files.ReadWrite.All`**:
+  - The site lookup (`GET /sites/{host}:{path}`) needs `Sites.*` permissions and will fail.
+  - Set `$briefingDriveId` to the drive ID of the KVTAlgemeen library "Gedeelde documenten". The current ID is `b!pIXr9wIzhEqTtnu2zdSFSshQtbeBpypEi1bmliwFU4MgmCNWzHvlTa8WxBnyLRKd`.
+  - Daedalus then skips the site lookup and only does drive operations, which the `Files.*` permissions cover.
+- **Only `Sites.Selected`**: an admin has to add a read grant on KVTAlgemeen:
   1. `GET https://graph.microsoft.com/v1.0/sites/kvtnl.sharepoint.com:/sites/KVTAlgemeen` and take the `id`.
   2. `POST https://graph.microsoft.com/v1.0/sites/{site-id}/permissions` with body `{"roles":["read"],"grantedToIdentities":[{"application":{"id":"<client_id>","displayName":"Clio"}}]}`. Run this as an admin, for example in Graph Explorer with `Sites.FullControl.All`.
 
