@@ -56,7 +56,10 @@ $allowedUsers = [
 // $briefingSiteHostname = 'kvtnl.sharepoint.com';
 // $briefingSitePath     = '/sites/KVTAlgemeen';
 // $briefingDriveName    = '';  // leeg = standaard documentbibliotheek ("Gedeelde documenten"); of 'Gedeelde documenten'
-// $briefingDriveId      = '';  // optioneel: vaste drive-id, slaat de site-lookup over (nodig als de app alleen Files.* heeft)
+// $briefingDriveId      = '';  // optioneel: vaste drive-id van de bibliotheek, slaat de site-/drive-lookup over
+//
+// Rechten: de app (van Clio) heeft Sites.Read.All/Sites.ReadWrite.All nodig, of Sites.Selected met een
+// read-grant op KVTAlgemeen. Files.Read(Write).All alleen is niet genoeg voor de site-lookup.
 //
 // Map waar de flow per dag per werkorder een Markdown-bestand neerzet:
 //   <briefingNotesFolder>/<JJJJ-MM-DD>/<WO-nr>.md  (in dezelfde bibliotheek)

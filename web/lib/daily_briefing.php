@@ -169,7 +169,10 @@ function daily_briefing_fetch_company_workorders(string $environment, string $co
 function daily_briefing_safe_message(Throwable $throwable): string
 {
     // Details (kunnen response-bodies van BC bevatten) alleen in de serverlog, nooit in de JSON.
-    error_log('[Daedalus] daily_briefing BC-fout: ' . $throwable->getMessage());
+    // Ook in de log: geen querystrings/inloggegevens uit URLs, en ingekort.
+    $detail = preg_replace('#(https?://)(?:[^/\s@]+@)?([^/\s?]+)([^\s?]*)\?\S*#i', '$1$2$3?[…]', $throwable->getMessage()) ?? '';
+    $detail = preg_replace('#(https?://)[^/\s@]+@#i', '$1', $detail) ?? '';
+    error_log('[Daedalus] daily_briefing BC-fout (' . get_class($throwable) . '): ' . mb_substr($detail, 0, 500, 'UTF-8'));
 
     return 'ophalen van gegevens is mislukt.';
 }

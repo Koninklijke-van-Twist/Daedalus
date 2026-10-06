@@ -549,6 +549,9 @@ same(502, $bcDown['status'], 'BC down (subscribers) → 502');
 check(strpos(json_encode($bcDown['body']), 'bc.invalid') === false, 'geen BC-URL in foutmelding');
 check(strpos(json_encode($bcDown['body']), 'HTTP 503') === false, 'geen exceptiontekst in foutmelding');
 same('Business Central niet bereikbaar: ophalen van gegevens is mislukt.', (string) ($bcDown['body']['errors'][0]['message'] ?? ''), 'vaste foutmelding');
+$logText = (string) @file_get_contents((string) ini_get('error_log'));
+check(strpos($logText, 'daily_briefing BC-fout') !== false, 'BC-fout gelogd');
+check(strpos($logText, '$filter=x') === false, 'geen querystring in de log');
 same(502, call_endpoint(['date' => '2026-11-03', 'scope' => 'all', 'company' => 'Koninklijke van Twist'])['status'], 'BC down (all) → 502');
 $GLOBALS['TEST_BC_DOWN'] = false;
 

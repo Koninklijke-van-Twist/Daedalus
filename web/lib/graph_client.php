@@ -21,9 +21,10 @@
  *   $briefingSiteHostname = 'kvtnl.sharepoint.com';
  *   $briefingSitePath     = '/sites/KVTAlgemeen';
  *   $briefingDriveName    = '';   // optioneel; leeg = standaard documentbibliotheek van de site
- *   $briefingDriveId      = '';   // optioneel; vaste drive-id → geen site-lookup (Files.Read.All volstaat)
+ *   $briefingDriveId      = '';   // optioneel; vaste drive-id → geen site-/drive-lookup
  *
- * Daedalus doet alleen GET-aanroepen (plus de token-POST); lezen op de site is genoeg.
+ * Daedalus doet alleen GET-aanroepen (plus de token-POST). Rechten: Sites.Read.All/Sites.ReadWrite.All,
+ * of Sites.Selected met een read-grant op de site (Files.* alleen is niet genoeg voor de site-lookup).
  *
  * Tests injecteren een transport via $GLOBALS['DAEDALUS_GRAPH_TRANSPORT']:
  *   function (array $request): array
@@ -459,7 +460,7 @@ function graph_drive_id(int $timeout = GRAPH_DEFAULT_TIMEOUT): string
 {
     $config = graph_config();
     if ($config['drive_id'] !== '') {
-        // Vaste drive-id: geen site-lookup nodig (die vereist Sites.*; Files.* volstaat dan).
+        // Vaste drive-id: geen site-/drive-lookup.
         return $config['drive_id'];
     }
 
