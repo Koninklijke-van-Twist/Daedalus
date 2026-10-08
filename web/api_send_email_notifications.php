@@ -5,6 +5,7 @@
 require __DIR__ . '/auth.php';
 require_once __DIR__ . '/functions.php';
 require_once __DIR__ . '/odata.php';
+require_once __DIR__ . '/lib/briefing_notes.php';
 
 /**
  * Constants
@@ -51,6 +52,7 @@ $summary = [
     'daily_overview_orders_sent' => 0,
     'emails_sent' => 0,
     'orders_sent' => 0,
+    'attention_notes_added' => 0,
     'errors' => [],
 ];
 
@@ -540,6 +542,43 @@ function fetch_service_resource_row_by_no(string $environment, string $company, 
     return $row;
 }
 
+/**
+ * Controleert of de resource uit de notificatie-instellingen een actieve persoon is die bij het
+ * e-mailadres hoort (AppResource.E_Mail, fallback AppUserSetup.Email -> User_ID -> AppResource.KVT_User_ID).
+ * Geeft de AppResource-rij terug, of [] als de gebruiker moet worden overgeslagen.
+ */
+function resolve_notification_service_resource(string $environment, string $company, string $email, string $resourceNo, array $auth): array
+{
+    $serviceResource = fetch_service_resource_row_by_no($environment, $company, $resourceNo, $auth);
+    if (empty($serviceResource)) {
+        return [];
+    }
+
+    $resourcesForEmail = fetch_app_resources_by_email($environment, $company, $email, $auth);
+    if (count($resourcesForEmail) === 0) {
+        $userSetupRows = fetch_user_setup_by_email($environment, $company, $email, $auth);
+        foreach ($userSetupRows as $userSetupRow) {
+            $userId = trim((string) ($userSetupRow['User_ID'] ?? ''));
+            if ($userId === '') {
+                continue;
+            }
+
+            $resourcesForEmail = array_merge(
+                $resourcesForEmail,
+                fetch_app_resources_by_user_id($environment, $company, $userId, $auth)
+            );
+        }
+    }
+
+    foreach ($resourcesForEmail as $resourceRow) {
+        if (trim((string) ($resourceRow['No'] ?? '')) === trim($resourceNo)) {
+            return $serviceResource;
+        }
+    }
+
+    return [];
+}
+
 function fetch_service_resources(string $environment, string $company, array $auth): array
 {
     $url = odata_company_url($environment, $company, 'AppResource', [
@@ -929,7 +968,8 @@ function fetch_workorders_for_resource_on_day(
     string $company,
     string $resourceNo,
     string $day,
-    array $auth
+    array $auth,
+    array $extraSelectFields = []
 ): array {
     $normalizedResourceNo = trim($resourceNo);
     if ($normalizedResourceNo === '') {
@@ -941,9 +981,17 @@ function fetch_workorders_for_resource_on_day(
         return [];
     }
 
+    $selectFields = ['No', 'Task_Code', 'Task_Description', 'Status', 'Main_Entity_Description', 'Component_Description', 'Start_Date', 'Start_Time', 'End_Time'];
+    foreach ($extraSelectFields as $extraField) {
+        $extraField = trim((string) $extraField);
+        if ($extraField !== '' && preg_match('/^[A-Za-z0-9_]+$/', $extraField) === 1 && !in_array($extraField, $selectFields, true)) {
+            $selectFields[] = $extraField;
+        }
+    }
+
     $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and Start_Date ge " . $normalizedDay . ' and Start_Date le ' . $normalizedDay;
     $url = odata_company_url($environment, $company, 'AppWerkorders', [
-        '$select' => 'No,Task_Code,Task_Description,Status,Main_Entity_Description,Component_Description,Start_Date,Start_Time,End_Time',
+        '$select' => implode(',', $selectFields),
         '$filter' => $filter,
         '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
     ]);
@@ -1073,7 +1121,23 @@ function daily_overview_subject(string $subjectPrefix, string $day): string
     return trim($subjectPrefix) . ' - dagelijks overzicht ' . trim($day);
 }
 
-function build_email_html(string $company, string $resourceNo, string $resourceName, array $workOrders, array $materialCounts, array $materialLabels, array $webfleetLabels): string
+/**
+ * Blok "Aandachtspunten" voor een werkorderkaart. $notesHtml is al veilig gemaakt
+ * (briefing_markdown_to_html); leeg = geen blok.
+ */
+function attention_notes_block_html(string $notesHtml): string
+{
+    if (trim($notesHtml) === '') {
+        return '';
+    }
+
+    return '<div style="margin-top:10px;padding:10px 12px;background:#fff8e6;border:1px solid #f1dfb0;border-radius:10px;">'
+        . '<p style="margin:0 0 4px 0;font-size:14px;font-weight:700;color:#7a5200;line-height:1.3;">Aandachtspunten</p>'
+        . '<div style="font-size:14px;line-height:1.4;color:#152233;">' . $notesHtml . '</div>'
+        . '</div>';
+}
+
+function build_email_html(string $company, string $resourceNo, string $resourceName, array $workOrders, array $materialCounts, array $materialLabels, array $webfleetLabels, array $attentionNotesHtml = []): string
 {
     $cardsHtml = '';
     $previousWorkOrderDayKey = '';
@@ -1180,6 +1244,7 @@ function build_email_html(string $company, string $resourceNo, string $resourceN
             $cardsHtml .= '<br /><b>Materiaalstatus</b>: <span style="' . htmlspecialchars($materialBadgeStyle, ENT_QUOTES, 'UTF-8') . '">' . safe_text_html($materialStatusLabel) . '</span>';
         }
         $cardsHtml .= '</div>';
+        $cardsHtml .= attention_notes_block_html((string) ($attentionNotesHtml[$workOrderNo] ?? ''));
 
         $cardsHtml .= '<div style="margin-top:10px;"><a href="' . htmlspecialchars($href, ENT_QUOTES, 'UTF-8') . '" style="display:inline-block;color:#0f5bb7;text-decoration:none;font-size:14px;font-weight:600;">Open werkorder</a></div>';
         $cardsHtml .= '</td>';
@@ -1354,37 +1419,8 @@ if (!defined('DAEDALUS_EMAIL_NOTIFICATIONS_LIB_ONLY')) {
             }
 
             try {
-                $serviceResource = fetch_service_resource_row_by_no($environment, $company, $resourceNo, $auth);
+                $serviceResource = resolve_notification_service_resource($environment, $company, $email, $resourceNo, $auth);
                 if (empty($serviceResource)) {
-                    $summary['skipped']++;
-                    continue;
-                }
-
-                $resourcesForEmail = fetch_app_resources_by_email($environment, $company, $email, $auth);
-                if (count($resourcesForEmail) === 0) {
-                    $userSetupRows = fetch_user_setup_by_email($environment, $company, $email, $auth);
-                    foreach ($userSetupRows as $userSetupRow) {
-                        $userId = trim((string) ($userSetupRow['User_ID'] ?? ''));
-                        if ($userId === '') {
-                            continue;
-                        }
-
-                        $resourcesForEmail = array_merge(
-                            $resourcesForEmail,
-                            fetch_app_resources_by_user_id($environment, $company, $userId, $auth)
-                        );
-                    }
-                }
-
-                $emailResourceNos = [];
-                foreach ($resourcesForEmail as $resourceRow) {
-                    $candidate = trim((string) ($resourceRow['No'] ?? ''));
-                    if ($candidate !== '') {
-                        $emailResourceNos[$candidate] = true;
-                    }
-                }
-
-                if (!isset($emailResourceNos[$resourceNo])) {
                     $summary['skipped']++;
                     continue;
                 }
@@ -1408,6 +1444,8 @@ if (!defined('DAEDALUS_EMAIL_NOTIFICATIONS_LIB_ONLY')) {
                         $dailyWorkOrderNos = array_map(static fn(array $workOrder): string => trim((string) ($workOrder['No'] ?? '')), $dailyWorkOrders);
                         $dailyMaterialSummary = fetch_workorder_material_summary_for_workorders($environment, $company, $dailyWorkOrderNos, $auth);
                         $dailyWebfleetLabels = fetch_webfleet_status_labels_for_workorders($environment, $company, $dailyWorkOrderNos, $auth);
+                        // Optioneel (Copilot-flow): <briefingNotesFolder>/<dag>/<WO>.md via Graph; faalt nooit.
+                        $dailyAttentionNotes = briefing_attention_notes_html($dailyWorkOrderNos, $todayUtc);
 
                         $dailyEmailHtml = build_email_html(
                             $company,
@@ -1416,7 +1454,8 @@ if (!defined('DAEDALUS_EMAIL_NOTIFICATIONS_LIB_ONLY')) {
                             $dailyWorkOrders,
                             is_array($dailyMaterialSummary['counts'] ?? null) ? $dailyMaterialSummary['counts'] : [],
                             is_array($dailyMaterialSummary['labels'] ?? null) ? $dailyMaterialSummary['labels'] : [],
-                            $dailyWebfleetLabels
+                            $dailyWebfleetLabels,
+                            $dailyAttentionNotes
                         );
 
                         $dailySubject = daily_overview_subject($subjectPrefix, $todayUtc);
@@ -1429,6 +1468,7 @@ if (!defined('DAEDALUS_EMAIL_NOTIFICATIONS_LIB_ONLY')) {
                             $dailyEmailHtml
                         );
 
+                        $summary['attention_notes_added'] += count($dailyAttentionNotes);
                         $summary['daily_overview_emails_sent']++;
                         $summary['daily_overview_orders_sent'] += count($dailyWorkOrders);
                         $summary['emails_sent_total']++;
