@@ -154,13 +154,19 @@ function daily_briefing_config_int(string $name, int $default, int $min, int $ma
  */
 function daily_briefing_fetch_company_workorders(string $environment, string $company, string $day, array $auth): array
 {
-    $url = odata_company_url($environment, $company, 'AppWerkorders', [
-        '$select' => DAILY_BRIEFING_WORKORDER_FIELDS,
-        '$filter' => workorder_odata_overlap_filter($day, $day),
-        '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
-    ]);
+    return workorder_fetch_overlapping(
+        $day,
+        $day,
+        static function (string $dateFilter) use ($environment, $company, $auth): array {
+            $url = odata_company_url($environment, $company, 'AppWerkorders', [
+                '$select' => DAILY_BRIEFING_WORKORDER_FIELDS,
+                '$filter' => $dateFilter,
+                '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
+            ]);
 
-    return workorder_rows_on_day(odata_get_all($url, $auth, odata_ttl('workorders_list')), $day);
+            return odata_get_all($url, $auth, odata_ttl('workorders_list'));
+        }
+    );
 }
 
 /**

@@ -2170,21 +2170,24 @@ function fetch_app_workorders_chunked(
         $start = $chunk['start']->format('Y-m-d');
         $end = $chunk['end']->format('Y-m-d');
 
-        $filterParts = [
-            workorder_odata_overlap_filter($start, $end),
-        ];
-        if (!$isAllResources) {
-            $filterParts[] = "Resource_No eq '" . odata_quote_string($resourceNo) . "'";
-        }
-        $filter = implode(' and ', $filterParts);
+        $rows = workorder_fetch_overlapping(
+            $start,
+            $end,
+            static function (string $dateFilter) use ($environment, $company, $auth, $isAllResources, $resourceNo): array {
+                $filter = $dateFilter;
+                if (!$isAllResources) {
+                    $filter = "Resource_No eq '" . odata_quote_string($resourceNo) . "' and " . $dateFilter;
+                }
 
-        $url = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Status,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,Job_No',
-            '$filter' => $filter,
-            '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
-        ]);
+                $url = odata_company_url($environment, $company, 'AppWerkorders', [
+                    '$select' => 'No,Task_Code,Task_Description,Status,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,Job_No',
+                    '$filter' => $filter,
+                    '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
+                ]);
 
-        $rows = odata_get_all($url, $auth, odata_ttl('workorders_list'));
+                return odata_get_all($url, $auth, odata_ttl('workorders_list'));
+            }
+        );
         foreach ($rows as $row) {
             $workOrderNo = trim((string) ($row['No'] ?? ''));
             if ($workOrderNo !== '' && isset($seenWorkOrders[$workOrderNo])) {

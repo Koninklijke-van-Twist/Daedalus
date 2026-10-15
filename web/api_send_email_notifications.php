@@ -965,14 +965,22 @@ function fetch_workorders_for_resource_on_day(
         }
     }
 
-    $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and " . workorder_odata_overlap_filter($normalizedDay, $normalizedDay);
-    $url = odata_company_url($environment, $company, 'AppWerkorders', [
-        '$select' => implode(',', $selectFields),
-        '$filter' => $filter,
-        '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
-    ]);
+    $select = implode(',', $selectFields);
 
-    return workorder_rows_on_day(odata_get_all($url, $auth, odata_ttl('workorders_list')), $normalizedDay);
+    return workorder_fetch_overlapping(
+        $normalizedDay,
+        $normalizedDay,
+        static function (string $dateFilter) use ($environment, $company, $auth, $normalizedResourceNo, $select): array {
+            $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and " . $dateFilter;
+            $url = odata_company_url($environment, $company, 'AppWerkorders', [
+                '$select' => $select,
+                '$filter' => $filter,
+                '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
+            ]);
+
+            return odata_get_all($url, $auth, odata_ttl('workorders_list'));
+        }
+    );
 }
 
 function workorder_link(string $company, string $resourceNo, string $workOrderNo): string

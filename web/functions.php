@@ -199,9 +199,374 @@ function workorder_rows_on_day(array $rows, string $day): array
     return $result;
 }
 
-function workorder_odata_overlap_filter(string $rangeStart, string $rangeEnd): string
+/**
+ * BC on-prem OData geeft 501 BadRequest_MethodNotImplemented als `or` twee
+ * verschillende velden combineert (`De operator 'OF' wordt niet ondersteund
+ * op afzonderlijke velden`). `or` op hetzelfde veld mag wel.
+ *
+ * Lege filter of een filter dat niet geparsed kan worden telt als onveilig,
+ * zodat een onbekende vorm niet per ongeluk doorgaat.
+ */
+function odata_filter_has_cross_field_or(string $filter): bool
 {
-    return 'Start_Date le ' . $rangeEnd . ' and (Start_Date ge ' . $rangeStart . ' or End_Date ge ' . $rangeStart . ')';
+    $filter = trim($filter);
+    if ($filter === '') {
+        return false;
+    }
+
+    $tokens = odata_filter_tokenize($filter);
+    if ($tokens === null) {
+        return true;
+    }
+
+    $index = 0;
+    $expr = odata_filter_parse_or($tokens, $index);
+    if ($expr === null || $index !== count($tokens)) {
+        return true;
+    }
+
+    return odata_filter_expr_cross_field_or($expr);
+}
+
+/**
+ * @return list<string>|null
+ */
+function odata_filter_tokenize(string $filter): ?array
+{
+    $tokens = [];
+    $length = strlen($filter);
+    $index = 0;
+    while ($index < $length) {
+        $char = $filter[$index];
+        if ($char === ' ' || $char === "\t" || $char === "\n" || $char === "\r") {
+            $index++;
+            continue;
+        }
+        if ($char === '(' || $char === ')') {
+            $tokens[] = $char;
+            $index++;
+            continue;
+        }
+        if ($char === "'") {
+            $index++;
+            $closed = false;
+            while ($index < $length) {
+                if ($filter[$index] === "'") {
+                    if ($index + 1 < $length && $filter[$index + 1] === "'") {
+                        $index += 2;
+                        continue;
+                    }
+                    $index++;
+                    $closed = true;
+                    break;
+                }
+                $index++;
+            }
+            if (!$closed) {
+                return null;
+            }
+            $tokens[] = 'value';
+            continue;
+        }
+
+        if (preg_match('/\G([A-Za-z_][A-Za-z0-9_]*|\d{4}-\d{2}-\d{2}(?:T[^)\s]*)?|-?\d+(?:\.\d+)?)/', $filter, $matches, 0, $index) !== 1) {
+            return null;
+        }
+
+        $word = (string) ($matches[1] ?? '');
+        $index += strlen($word);
+        $lower = strtolower($word);
+        if (in_array($lower, ['and', 'or', 'eq', 'ne', 'gt', 'ge', 'lt', 'le'], true)) {
+            $tokens[] = $lower;
+            continue;
+        }
+        $tokens[] = 'word:' . $word;
+    }
+
+    return $tokens;
+}
+
+/**
+ * @param list<string> $tokens
+ * @return array<string, mixed>|null
+ */
+function odata_filter_parse_or(array $tokens, int &$index): ?array
+{
+    $left = odata_filter_parse_and($tokens, $index);
+    if ($left === null) {
+        return null;
+    }
+    if (($tokens[$index] ?? null) !== 'or') {
+        return $left;
+    }
+
+    $items = [$left];
+    while (($tokens[$index] ?? null) === 'or') {
+        $index++;
+        $right = odata_filter_parse_and($tokens, $index);
+        if ($right === null) {
+            return null;
+        }
+        $items[] = $right;
+    }
+
+    return ['type' => 'or', 'items' => $items];
+}
+
+/**
+ * @param list<string> $tokens
+ * @return array<string, mixed>|null
+ */
+function odata_filter_parse_and(array $tokens, int &$index): ?array
+{
+    $left = odata_filter_parse_primary($tokens, $index);
+    if ($left === null) {
+        return null;
+    }
+    if (($tokens[$index] ?? null) !== 'and') {
+        return $left;
+    }
+
+    $items = [$left];
+    while (($tokens[$index] ?? null) === 'and') {
+        $index++;
+        $right = odata_filter_parse_primary($tokens, $index);
+        if ($right === null) {
+            return null;
+        }
+        $items[] = $right;
+    }
+
+    return ['type' => 'and', 'items' => $items];
+}
+
+/**
+ * @param list<string> $tokens
+ * @return array<string, mixed>|null
+ */
+function odata_filter_parse_primary(array $tokens, int &$index): ?array
+{
+    $token = $tokens[$index] ?? null;
+    if ($token === '(') {
+        $index++;
+        $expr = odata_filter_parse_or($tokens, $index);
+        if ($expr === null || ($tokens[$index] ?? null) !== ')') {
+            return null;
+        }
+        $index++;
+
+        return $expr;
+    }
+
+    if (!is_string($token) || strpos($token, 'word:') !== 0) {
+        return null;
+    }
+
+    $field = substr($token, 5);
+    $index++;
+    $operator = $tokens[$index] ?? null;
+    if (!in_array($operator, ['eq', 'ne', 'gt', 'ge', 'lt', 'le'], true)) {
+        return null;
+    }
+    $index++;
+    $value = $tokens[$index] ?? null;
+    $valueOk = $value === 'value' || (is_string($value) && strpos($value, 'word:') === 0);
+    if (!$valueOk) {
+        return null;
+    }
+    $index++;
+
+    return ['type' => 'pred', 'field' => $field];
+}
+
+/**
+ * @param array<string, mixed> $expr
+ */
+function odata_filter_expr_cross_field_or(array $expr): bool
+{
+    $type = (string) ($expr['type'] ?? '');
+    if ($type === 'pred') {
+        return false;
+    }
+
+    $items = $expr['items'] ?? null;
+    if (($type !== 'and' && $type !== 'or') || !is_array($items) || $items === []) {
+        return true;
+    }
+
+    if ($type === 'and') {
+        foreach ($items as $item) {
+            if (!is_array($item) || odata_filter_expr_cross_field_or($item)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    $fields = [];
+    foreach ($items as $item) {
+        if (!is_array($item) || odata_filter_expr_cross_field_or($item)) {
+            return true;
+        }
+        foreach (odata_filter_expr_fields($item) as $field) {
+            $fields[$field] = true;
+        }
+    }
+
+    return count($fields) > 1;
+}
+
+/**
+ * @param array<string, mixed> $expr
+ * @return list<string>
+ */
+function odata_filter_expr_fields(array $expr): array
+{
+    if (($expr['type'] ?? '') === 'pred') {
+        $field = trim((string) ($expr['field'] ?? ''));
+
+        return $field === '' ? [] : [$field];
+    }
+
+    $fields = [];
+    $items = $expr['items'] ?? [];
+    if (!is_array($items)) {
+        return [];
+    }
+    foreach ($items as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        foreach (odata_filter_expr_fields($item) as $field) {
+            $fields[$field] = $field;
+        }
+    }
+
+    return array_values($fields);
+}
+
+/**
+ * Twee AND-filters die samen de overlap met [rangeStart, rangeEnd] benaderen.
+ * BC on-prem ondersteunt geen `or` tussen Start_Date en End_Date. De aanroeper
+ * haalt beide op, ontdubbelt op ordernummer en laat de einddatum in PHP beslissen.
+ *
+ * @return list<string>
+ */
+function workorder_odata_overlap_filters(string $rangeStart, string $rangeEnd): array
+{
+    $start = workorder_ymd($rangeStart);
+    $end = workorder_ymd($rangeEnd);
+    if ($start === '' || $end === '') {
+        return [];
+    }
+    if ($end < $start) {
+        $swap = $start;
+        $start = $end;
+        $end = $swap;
+    }
+
+    return [
+        'Start_Date ge ' . $start . ' and Start_Date le ' . $end,
+        'Start_Date le ' . $end . ' and End_Date ge ' . $start,
+    ];
+}
+
+/**
+ * @param list<list<array<string, mixed>>> $batches
+ * @return list<array<string, mixed>>
+ */
+function workorder_merge_rows(array $batches): array
+{
+    $merged = [];
+    $seen = [];
+    foreach ($batches as $batch) {
+        if (!is_array($batch)) {
+            continue;
+        }
+        foreach ($batch as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $no = trim((string) ($row['No'] ?? ''));
+            if ($no !== '') {
+                if (isset($seen[$no])) {
+                    continue;
+                }
+                $seen[$no] = true;
+            }
+            $merged[] = $row;
+        }
+    }
+
+    return $merged;
+}
+
+/**
+ * @param list<array<string, mixed>> $rows
+ * @return list<array<string, mixed>>
+ */
+function workorder_rows_overlapping(array $rows, string $rangeStart, string $rangeEnd): array
+{
+    $startYmd = workorder_ymd($rangeStart);
+    $endYmd = workorder_ymd($rangeEnd);
+    if ($startYmd === '' || $endYmd === '') {
+        return [];
+    }
+    if ($endYmd < $startYmd) {
+        $swap = $startYmd;
+        $startYmd = $endYmd;
+        $endYmd = $swap;
+    }
+
+    $start = DateTimeImmutable::createFromFormat('!Y-m-d', $startYmd, new DateTimeZone('UTC'));
+    $end = DateTimeImmutable::createFromFormat('!Y-m-d', $endYmd, new DateTimeZone('UTC'));
+    if (!($start instanceof DateTimeImmutable) || !($end instanceof DateTimeImmutable)) {
+        return [];
+    }
+
+    $result = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        if (workorder_days_in_range($row, $start, $end) !== []) {
+            $result[] = $row;
+        }
+    }
+
+    return $result;
+}
+
+/**
+ * Haalt kandidaten op zonder `or` over verschillende velden en houdt daarna
+ * alleen rijen waarvan de order (start t/m eind) de reeks snijdt.
+ *
+ * @param callable(string): list<array<string, mixed>> $fetchFilter
+ * @return list<array<string, mixed>>
+ */
+function workorder_fetch_overlapping(string $rangeStart, string $rangeEnd, callable $fetchFilter): array
+{
+    $batches = [];
+    foreach (workorder_odata_overlap_filters($rangeStart, $rangeEnd) as $filter) {
+        $batch = $fetchFilter($filter);
+        $batches[] = is_array($batch) ? $batch : [];
+    }
+
+    $overlapping = workorder_rows_overlapping(workorder_merge_rows($batches), $rangeStart, $rangeEnd);
+    usort($overlapping, static function (array $left, array $right): int {
+        return [
+            workorder_ymd((string) ($left['Start_Date'] ?? '')),
+            format_workorder_time_value((string) ($left['Start_Time'] ?? '')),
+            trim((string) ($left['No'] ?? '')),
+        ] <=> [
+            workorder_ymd((string) ($right['Start_Date'] ?? '')),
+            format_workorder_time_value((string) ($right['Start_Time'] ?? '')),
+            trim((string) ($right['No'] ?? '')),
+        ];
+    });
+
+    return $overlapping;
 }
 
 function format_workorder_time_value(string $value): string
