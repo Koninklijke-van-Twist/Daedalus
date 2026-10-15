@@ -207,30 +207,6 @@ function build_or_filter(string $field, array $values): string
     return '(' . implode(' or ', $parts) . ')';
 }
 
-function format_workorder_time_value(string $value): string
-{
-    $raw = trim($value);
-    if ($raw === '') {
-        return '';
-    }
-
-    try {
-        $dateTime = new DateTimeImmutable($raw);
-        return $dateTime->format('H:i');
-    } catch (Throwable $throwable) {
-    }
-
-    if (preg_match('/T(\d{2}:\d{2})/', $raw, $matches) === 1) {
-        return (string) ($matches[1] ?? '');
-    }
-
-    if (preg_match('/^(\d{2}:\d{2})/', $raw, $matches) === 1) {
-        return (string) ($matches[1] ?? '');
-    }
-
-    return '';
-}
-
 function parse_iso_datetime_or_null(string $value): ?DateTimeImmutable
 {
     $raw = trim($value);

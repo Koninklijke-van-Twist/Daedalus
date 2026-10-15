@@ -63,6 +63,23 @@ same(
     'einddag loopt vanaf het begin van de werkdag tot de eindtijd'
 );
 
+$isoTimes = [
+    'Start_Date' => '2026-10-08',
+    'End_Date' => '2026-10-09',
+    'Start_Time' => '2026-10-08T16:00:00.1234567',
+    'End_Time' => '2026-10-09T08:15:00.0000000Z',
+];
+same(
+    ['start_time' => '16:00', 'end_time' => '18:00', 'start_minutes' => 16 * 60, 'end_minutes' => 18 * 60, 'all_day' => false],
+    workorder_multiday_calendar_slot($isoTimes, '2026-10-08'),
+    'ISO-starttijd met fracties blijft 16:00 en valt niet terug op 07:00'
+);
+same(
+    ['start_time' => '07:00', 'end_time' => '08:15', 'start_minutes' => 7 * 60, 'end_minutes' => (8 * 60) + 15, 'all_day' => false],
+    workorder_multiday_calendar_slot($isoTimes, '2026-10-09', format_workorder_time_value($isoTimes['Start_Time']), format_workorder_time_value($isoTimes['End_Time'])),
+    'dezelfde tijdparser als de weekkalender bepaalt de eindtijd'
+);
+
 $long = [
     'No' => 'WO2605377',
     'Start_Date' => '2026-10-01',

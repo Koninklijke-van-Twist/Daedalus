@@ -204,15 +204,40 @@ function workorder_odata_overlap_filter(string $rangeStart, string $rangeEnd): s
     return 'Start_Date le ' . $rangeEnd . ' and (Start_Date ge ' . $rangeStart . ' or End_Date ge ' . $rangeStart . ')';
 }
 
+function format_workorder_time_value(string $value): string
+{
+    $raw = trim($value);
+    if ($raw === '') {
+        return '';
+    }
+
+    try {
+        $dateTime = new DateTimeImmutable($raw);
+        return $dateTime->format('H:i');
+    } catch (Throwable $throwable) {
+    }
+
+    if (preg_match('/T(\d{2}:\d{2})/', $raw, $matches) === 1) {
+        return (string) ($matches[1] ?? '');
+    }
+
+    if (preg_match('/^(\d{2}:\d{2})/', $raw, $matches) === 1) {
+        return (string) ($matches[1] ?? '');
+    }
+
+    return '';
+}
+
 function workorder_clock_minutes(string $time): ?int
 {
-    if (preg_match('/^(\d{1,2}):(\d{2})(?::\d{2})?$/', trim($time), $matches) !== 1) {
+    $formatted = format_workorder_time_value($time);
+    if ($formatted === '' || preg_match('/^(\d{2}):(\d{2})$/', $formatted, $matches) !== 1) {
         return null;
     }
 
     $hours = (int) $matches[1];
     $minutes = (int) $matches[2];
-    if ($hours < 0 || $hours > 23 || $minutes < 0 || $minutes > 59) {
+    if ($hours > 23 || $minutes > 59) {
         return null;
     }
 
@@ -237,7 +262,7 @@ function workorder_minutes_clock(int $minutes): string
  *
  * @return array{start_time: string, end_time: string, start_minutes: int, end_minutes: int, all_day: bool}|null
  */
-function workorder_multiday_calendar_slot(array $row, string $occurrenceYmd): ?array
+function workorder_multiday_calendar_slot(array $row, string $occurrenceYmd, ?string $startTime = null, ?string $endTime = null): ?array
 {
     $startYmd = workorder_ymd((string) ($row['Start_Date'] ?? ''));
     $endYmd = workorder_ymd((string) ($row['End_Date'] ?? ''));
@@ -251,8 +276,8 @@ function workorder_multiday_calendar_slot(array $row, string $occurrenceYmd): ?a
 
     $workdayStart = 7 * 60;
     $workdayEnd = 18 * 60;
-    $startTime = workorder_clock_minutes((string) ($row['Start_Time'] ?? ''));
-    $endTime = workorder_clock_minutes((string) ($row['End_Time'] ?? ''));
+    $startTime = workorder_clock_minutes($startTime ?? (string) ($row['Start_Time'] ?? ''));
+    $endTime = workorder_clock_minutes($endTime ?? (string) ($row['End_Time'] ?? ''));
 
     if ($occurrenceYmd === $startYmd) {
         $slotStart = $startTime ?? $workdayStart;
