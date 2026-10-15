@@ -665,7 +665,7 @@ function map_workorder_for_week_calendar(array $workOrder, array $hrefBaseQuery,
     $startTime = format_workorder_time_value((string) ($workOrder['Start_Time'] ?? ''));
     $endTime = format_workorder_time_value((string) ($workOrder['End_Time'] ?? ''));
     $occurrenceYmd = $occurrenceDate ?? workorder_ymd((string) ($workOrder['Start_Date'] ?? ''));
-    $multiDaySlot = workorder_multiday_calendar_slot($workOrder, $occurrenceYmd);
+    $multiDaySlot = workorder_multiday_calendar_slot($workOrder, $occurrenceYmd, $startTime, $endTime);
     if ($multiDaySlot !== null) {
         $startTime = (string) $multiDaySlot['start_time'];
         $endTime = (string) $multiDaySlot['end_time'];
@@ -1650,30 +1650,6 @@ function normalize_webfleet_filter_map(array $input): array
     }
 
     return $normalized;
-}
-
-function format_workorder_time_value(string $value): string
-{
-    $raw = trim($value);
-    if ($raw === '') {
-        return '';
-    }
-
-    try {
-        $dateTime = new DateTimeImmutable($raw);
-        return $dateTime->format('H:i');
-    } catch (Throwable $throwable) {
-    }
-
-    if (preg_match('/T(\d{2}:\d{2})/', $raw, $matches) === 1) {
-        return (string) ($matches[1] ?? '');
-    }
-
-    if (preg_match('/^(\d{2}:\d{2})/', $raw, $matches) === 1) {
-        return (string) ($matches[1] ?? '');
-    }
-
-    return '';
 }
 
 function parse_iso_datetime_or_null(string $value): ?DateTimeImmutable
