@@ -232,6 +232,8 @@ $GLOBALS['DAEDALUS_ODATA_BC_FETCH'] = static function (string $url, array $auth,
         ['No' => 'WO2610004', 'Task_Code' => 'CO', 'Task_Description' => 'Correctief', 'Status' => 'Open', 'Main_Entity_Description' => 'Zonder object', 'Component_No' => '', 'Component_Description' => '', 'Start_Date' => '2026-10-07', 'Start_Time' => '14:00:00', 'End_Time' => '15:00:00', 'Resource_No' => '1001'],
         ['No' => 'WO2610005', 'Task_Code' => 'ST', 'Task_Description' => 'Storing', 'Status' => 'Open', 'Main_Entity_Description' => 'Nieuw object', 'Component_No' => '10000002', 'Component_Description' => 'Nieuw', 'Start_Date' => '2026-10-07', 'Start_Time' => '15:00:00', 'End_Time' => '16:00:00', 'Resource_No' => '1001'],
         ['No' => 'WO2610006', 'Task_Code' => 'PD', 'Task_Description' => 'Proefdraaien', 'Status' => 'Planned', 'Main_Entity_Description' => 'Ander', 'Component_No' => '10000003', 'Component_Description' => 'Ander Object', 'Start_Date' => '2026-10-07', 'Start_Time' => '09:00:00', 'End_Time' => '10:00:00', 'Resource_No' => '1002'],
+        ['No' => 'WO2610099', 'Task_Code' => 'OH', 'Task_Description' => 'Meerdaags', 'Status' => 'Gepland', 'Main_Entity_Description' => 'Fictieve locatie', 'Component_No' => '10000001', 'Component_Description' => 'Testaggregaat Fictief', 'Start_Date' => '2026-10-06', 'Start_Time' => '16:00:00', 'End_Date' => '2026-10-08', 'End_Time' => '08:15:00', 'Resource_No' => '1001'],
+        ['No' => 'WO2610098', 'Task_Code' => 'OH', 'Task_Description' => 'Afgelopen', 'Status' => 'Gepland', 'Main_Entity_Description' => 'Fictieve locatie', 'Component_No' => '10000001', 'Component_Description' => 'Testaggregaat Fictief', 'Start_Date' => '2026-10-01', 'Start_Time' => '08:00:00', 'End_Date' => '2026-10-02', 'End_Time' => '17:00:00', 'Resource_No' => '1001'],
         ['No' => 'WO2610008', 'Task_Code' => 'TR', 'Task_Description' => 'Transport', 'Status' => 'Planned', 'Main_Entity_Description' => 'x', 'Component_No' => '', 'Component_Description' => '', 'Start_Date' => '2026-10-07', 'Start_Time' => '09:00:00', 'End_Time' => '10:00:00', 'Resource_No' => 'V01'],
     ];
 
@@ -254,11 +256,32 @@ $GLOBALS['DAEDALUS_ODATA_BC_FETCH'] = static function (string $url, array $auth,
         if (strpos($select, 'Component_No') === false) {
             fail('AppWerkorders-query voor de briefing mist Component_No: ' . $select);
         }
-        if (preg_match("/^Resource_No eq '([^']*)' and Start_Date ge (\\S+) and Start_Date le (\\S+)$/", $filter, $mm) === 1) {
-            return array_values(array_filter($workOrders, static fn(array $w): bool => $w['Resource_No'] === $mm[1] && $w['Start_Date'] === $mm[2]));
+        if (strpos($select, 'End_Date') === false) {
+            fail('AppWerkorders-query voor de briefing mist End_Date: ' . $select);
         }
-        if (preg_match('/^Start_Date ge (\S+) and Start_Date le (\S+)$/', $filter, $mm) === 1) {
-            return array_values(array_filter($workOrders, static fn(array $w): bool => $w['Start_Date'] === $mm[1]));
+        $matchesDay = static function (array $workOrder, string $day): bool {
+            $start = substr((string) ($workOrder['Start_Date'] ?? ''), 0, 10);
+            $end = substr((string) ($workOrder['End_Date'] ?? ''), 0, 10);
+            if ($start === '' || $start > $day) {
+                return false;
+            }
+            if ($start === $day) {
+                return true;
+            }
+
+            return $end !== '' && $end !== '0001-01-01' && $end >= $day;
+        };
+        if (preg_match("/^Resource_No eq '([^']*)' and Start_Date le (\\S+) and \\(Start_Date ge (\\S+) or End_Date ge (\\S+)\\)$/", $filter, $mm) === 1) {
+            return array_values(array_filter(
+                $workOrders,
+                static fn(array $w): bool => $w['Resource_No'] === $mm[1] && $mm[2] === $mm[3] && $mm[3] === $mm[4] && $matchesDay($w, $mm[2])
+            ));
+        }
+        if (preg_match('/^Start_Date le (\S+) and \(Start_Date ge (\S+) or End_Date ge (\S+)\)$/', $filter, $mm) === 1) {
+            return array_values(array_filter(
+                $workOrders,
+                static fn(array $w): bool => $mm[1] === $mm[2] && $mm[2] === $mm[3] && $matchesDay($w, $mm[1])
+            ));
         }
     }
 
@@ -456,7 +479,11 @@ same('ok', $body['sharepoint']['index_status'], 'index geladen');
 same(1, count($body['resources']), 'alleen de monteur met dagoverzicht aan');
 $resource = $body['resources'][0];
 same(['1001', 'Testmonteur, Henk', 'henk@example.com', 'Koninklijke van Twist'], [$resource['resource_no'], $resource['name'], $resource['email'], $resource['company']], 'resourcegegevens');
-same(['WO2610002', 'WO2610001', 'WO2610004', 'WO2610005'], array_column($resource['workorders'], 'no'), 'werkorders gesorteerd op tijd, geannuleerde (Geannuleerd) weggelaten');
+same(['WO2610099', 'WO2610002', 'WO2610001', 'WO2610004', 'WO2610005'], array_column($resource['workorders'], 'no'), 'werkorders gesorteerd op tijd, geannuleerde (Geannuleerd) weggelaten, meerdaagse order telt mee');
+$span = find_workorder($body, 'WO2610099');
+check(is_array($span), 'meerdaagse order aanwezig');
+same(['2026-10-06', '16:00', '08:15'], [$span['start_date'], $span['start_time'], $span['end_time']], 'meerdaagse order behoudt start en eindtijd');
+check(find_workorder($body, 'WO2610098') === null, 'order die al geëindigd is staat niet op een latere dag');
 $wo1 = find_workorder($body, 'WO2610001');
 same(['PD', 'Proefdraaien', '10:00', '12:00', 'Fictieve locatie', '10000001', 'Testaggregaat Fictief'], [$wo1['task_code'], $wo1['task'], $wo1['start_time'], $wo1['end_time'], $wo1['main_entity_description'], $wo1['component_no'], $wo1['component_description']], 'werkordervelden');
 check(strpos($wo1['link'], 'https://sleutels.kvt.nl/daedalus/index.php?') === 0 && strpos($wo1['link'], 'workorder=WO2610001') !== false, 'Daedalus-link');
@@ -611,6 +638,10 @@ $mailWorkOrders = [
 $legacyHtml = build_email_html('Koninklijke van Twist', '1001', 'Testmonteur, Henk', $mailWorkOrders, [], [], []);
 same($legacyHtml, build_email_html('Koninklijke van Twist', '1001', 'Testmonteur, Henk', $mailWorkOrders, [], [], [], []), 'zonder aandachtspunten exact dezelfde mail');
 check(strpos($legacyHtml, 'Aandachtspunten') === false, 'zonder notes geen blok');
+$spanMail = build_email_html('Koninklijke van Twist', '1001', 'Testmonteur, Henk', [
+    ['No' => 'WO2601071', 'Task_Description' => 'Meerdaags', 'Status' => 'Gepland', 'Start_Date' => '2026-10-08', 'Start_Time' => '16:00:00', 'End_Date' => '2026-10-09', 'End_Time' => '08:15:00', 'Main_Entity_Description' => 'Locatie', 'Component_Description' => 'Object'],
+], [], [], []);
+check(strpos($spanMail, '08-10-2026 16:00 t/m 09-10-2026 08:15') !== false, 'dagmail toont start- en einddatum als ze verschillen');
 
 // Zonder Graph-config: geen calls, lege array.
 $GLOBALS['sharepointSettings']['tenant_id'] = '';
