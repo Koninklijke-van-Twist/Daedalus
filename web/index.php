@@ -659,29 +659,39 @@ function minutes_to_hhmm(int $minutes): string
     return sprintf('%02d:%02d', intdiv($clamped, 60), $clamped % 60);
 }
 
-function map_workorder_for_week_calendar(array $workOrder, array $hrefBaseQuery): array
+function map_workorder_for_week_calendar(array $workOrder, array $hrefBaseQuery, ?string $occurrenceDate = null): array
 {
     $no = trim((string) ($workOrder['No'] ?? ''));
     $startTime = format_workorder_time_value((string) ($workOrder['Start_Time'] ?? ''));
     $endTime = format_workorder_time_value((string) ($workOrder['End_Time'] ?? ''));
-    $startMinutes = workorder_hhmm_to_minutes($startTime);
-    $endMinutes = workorder_hhmm_to_minutes($endTime);
-    $allDay = $startMinutes === null && $endMinutes === null;
+    $occurrenceYmd = $occurrenceDate ?? workorder_ymd((string) ($workOrder['Start_Date'] ?? ''));
+    $multiDaySlot = workorder_multiday_calendar_slot($workOrder, $occurrenceYmd);
+    if ($multiDaySlot !== null) {
+        $startTime = (string) $multiDaySlot['start_time'];
+        $endTime = (string) $multiDaySlot['end_time'];
+        $startMinutes = (int) $multiDaySlot['start_minutes'];
+        $endMinutes = (int) $multiDaySlot['end_minutes'];
+        $allDay = (bool) $multiDaySlot['all_day'];
+    } else {
+        $startMinutes = workorder_hhmm_to_minutes($startTime);
+        $endMinutes = workorder_hhmm_to_minutes($endTime);
+        $allDay = $startMinutes === null && $endMinutes === null;
 
-    if (!$allDay) {
-        if ($startMinutes === null && $endMinutes !== null) {
-            $startMinutes = max(0, $endMinutes - 60);
-            $startTime = minutes_to_hhmm($startMinutes);
-        }
+        if (!$allDay) {
+            if ($startMinutes === null && $endMinutes !== null) {
+                $startMinutes = max(0, $endMinutes - 60);
+                $startTime = minutes_to_hhmm($startMinutes);
+            }
 
-        if ($endMinutes === null && $startMinutes !== null) {
-            $endMinutes = min(24 * 60, $startMinutes + 60);
-            $endTime = $endMinutes >= (24 * 60) ? '24:00' : minutes_to_hhmm($endMinutes);
-        }
+            if ($endMinutes === null && $startMinutes !== null) {
+                $endMinutes = min(24 * 60, $startMinutes + 60);
+                $endTime = $endMinutes >= (24 * 60) ? '24:00' : minutes_to_hhmm($endMinutes);
+            }
 
-        if ($startMinutes !== null && $endMinutes !== null && $endMinutes <= $startMinutes) {
-            $endMinutes = min(24 * 60, $startMinutes + 60);
-            $endTime = $endMinutes >= (24 * 60) ? '24:00' : minutes_to_hhmm($endMinutes);
+            if ($startMinutes !== null && $endMinutes !== null && $endMinutes <= $startMinutes) {
+                $endMinutes = min(24 * 60, $startMinutes + 60);
+                $endTime = $endMinutes >= (24 * 60) ? '24:00' : minutes_to_hhmm($endMinutes);
+            }
         }
     }
 
@@ -742,12 +752,13 @@ function build_week_calendar_payload(
     }
 
     foreach ($workOrders as $workOrder) {
-        $dayKey = workorder_day_key((string) ($workOrder['Start_Date'] ?? ''));
-        if ($dayKey === '' || !isset($days[$dayKey])) {
-            continue;
-        }
+        foreach (workorder_days_in_range($workOrder, $weekStart, $weekEnd) as $dayKey) {
+            if (!isset($days[$dayKey])) {
+                continue;
+            }
 
-        $days[$dayKey]['workorders'][] = map_workorder_for_week_calendar($workOrder, $hrefBaseQuery);
+            $days[$dayKey]['workorders'][] = map_workorder_for_week_calendar($workOrder, $hrefBaseQuery, $dayKey);
+        }
     }
 
     return [
@@ -986,6 +997,10 @@ function build_or_filter(string $field, array $values): string
 function workorder_sort_key(array $row): string
 {
     $date = trim((string) ($row['Start_Date'] ?? ''));
+    $listDay = workorder_ymd((string) ($row['_list_day'] ?? ''));
+    if ($listDay !== '') {
+        $date = $date === '' ? $listDay : ($listDay . substr($date, 10));
+    }
     $time = format_workorder_time_value((string) ($row['Start_Time'] ?? ''));
 
     if ($date === '') {
@@ -2180,8 +2195,7 @@ function fetch_app_workorders_chunked(
         $end = $chunk['end']->format('Y-m-d');
 
         $filterParts = [
-            "Start_Date ge " . $start,
-            "Start_Date le " . $end,
+            workorder_odata_overlap_filter($start, $end),
         ];
         if (!$isAllResources) {
             $filterParts[] = "Resource_No eq '" . odata_quote_string($resourceNo) . "'";
@@ -2189,7 +2203,7 @@ function fetch_app_workorders_chunked(
         $filter = implode(' and ', $filterParts);
 
         $url = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Status,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Time,External_Document_No,Job_No',
+            '$select' => 'No,Task_Code,Task_Description,Status,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,Job_No',
             '$filter' => $filter,
             '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
         ]);
@@ -2651,7 +2665,7 @@ function fetch_app_workorder_list_row_by_no(
         $environment,
         $company,
         'AppWerkorders',
-        'No,Task_Code,Task_Description,Status,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Time,External_Document_No,Job_No',
+        'No,Task_Code,Task_Description,Status,Resource_Name,Main_Entity_Description,Sub_Entity_Description,Component_No,Component_Description,Serial_No,Start_Date,Start_Time,End_Date,End_Time,External_Document_No,Job_No',
         "No eq '" . odata_quote_string($normalizedWorkOrderNo) . "'",
         $auth,
         odata_ttl('workorder_detail')
@@ -2803,11 +2817,25 @@ function merge_orders_by_date(
 ): array {
     $items = [];
     foreach ($workOrders as $workOrder) {
-        $items[] = [
-            'type' => 'workorder',
-            'data' => $workOrder,
-            'sort_key' => workorder_sort_key($workOrder),
-        ];
+        $days = workorder_days_in_range($workOrder, $rangeStart, $rangeEnd);
+        if ($days === []) {
+            $items[] = [
+                'type' => 'workorder',
+                'data' => $workOrder,
+                'sort_key' => workorder_sort_key($workOrder),
+            ];
+            continue;
+        }
+
+        foreach ($days as $day) {
+            $copy = $workOrder;
+            $copy['_list_day'] = $day;
+            $items[] = [
+                'type' => 'workorder',
+                'data' => $copy,
+                'sort_key' => workorder_sort_key($copy),
+            ];
+        }
     }
     foreach ($assemblyOrders as $assemblyOrder) {
         $items[] = [
@@ -3082,6 +3110,7 @@ $selectedWorkOrderMaterialStatusLabel = 'Onbekend';
 $selectedWorkOrderWebfleetStatusLabel = webfleet_default_status_label();
 $selectedWorkOrderStartTime = '';
 $selectedWorkOrderEndTime = '';
+$selectedWorkOrderPeriod = '';
 $selectedWorkOrderPrimaryContactName = '';
 $selectedWorkOrderVisitAddress = '';
 $taskArticleLines = [];
@@ -3715,7 +3744,7 @@ try {
 
     if ($selectedWorkOrderNo !== '') {
         $selectedUrl = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Resource_Name,Main_Entity_Description,Component_No,Component_Description,Start_Date,Start_Time,End_Time,Job_No,KVT_Memo,KVT_Memo_Internal_Use_Only',
+            '$select' => 'No,Task_Code,Task_Description,Resource_Name,Main_Entity_Description,Component_No,Component_Description,Start_Date,Start_Time,End_Date,End_Time,Job_No,KVT_Memo,KVT_Memo_Internal_Use_Only',
             '$filter' => "No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
         ]);
         $selectedRows = odata_get_all($selectedUrl, $auth, odata_ttl('workorder_detail'));
@@ -3738,6 +3767,11 @@ try {
 
             $selectedWorkOrderStartTime = format_workorder_time_value((string) ($selectedWorkOrder['Start_Time'] ?? ''));
             $selectedWorkOrderEndTime = format_workorder_time_value((string) ($selectedWorkOrder['End_Time'] ?? ''));
+            $selectedWorkOrderPeriod = workorder_period_label(
+                $selectedWorkOrder,
+                $selectedWorkOrderStartTime,
+                $selectedWorkOrderEndTime
+            );
 
             $selectedWorkOrderMaterialSummary = fetch_workorder_material_summary_for_workorders(
                 $environment,
@@ -5796,9 +5830,13 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                     <?= bc_text_html(workorder_task_text($selectedWorkOrder)) ?>
                 </h1>
                 <p class="subtitle">
-                    Uitvoerdatum: <?= htmlspecialchars(nl_date((string) ($selectedWorkOrder['Start_Date'] ?? ''))) ?>
+                    <?php if ($selectedWorkOrderPeriod !== ''): ?>
+                        Uitvoerdatum: <?= htmlspecialchars($selectedWorkOrderPeriod) ?>
+                    <?php else: ?>
+                        Uitvoerdatum: <?= htmlspecialchars(nl_date((string) ($selectedWorkOrder['Start_Date'] ?? ''))) ?>
+                    <?php endif; ?>
                     · Monteur: <?= bc_text_html((string) ($selectedWorkOrder['Resource_Name'] ?? '')) ?>
-                    <?php if ($selectedWorkOrderStartTime !== '' || $selectedWorkOrderEndTime !== ''): ?>
+                    <?php if ($selectedWorkOrderPeriod === '' && ($selectedWorkOrderStartTime !== '' || $selectedWorkOrderEndTime !== '')): ?>
                         <br />
                         <?php if ($selectedWorkOrderStartTime !== ''): ?>
                             Starttijd: <?= htmlspecialchars($selectedWorkOrderStartTime) ?>
@@ -6004,7 +6042,7 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                             );
                         } else {
                             $listItemHrefParams['workorder'] = (string) ($listItemData['No'] ?? '');
-                            $listItemStartDateRaw = (string) ($listItemData['Start_Date'] ?? '');
+                            $listItemStartDateRaw = (string) ($listItemData['_list_day'] ?? $listItemData['Start_Date'] ?? '');
                         }
                         $listItemHref = 'index.php?' . http_build_query($listItemHrefParams, '', '&', PHP_QUERY_RFC3986);
                         $orderDayKey = workorder_day_key($listItemStartDateRaw);
@@ -6067,13 +6105,16 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                             $workOrderMaterialBadgeClass = 'badge ' . workorder_material_badge_class($workOrderMaterialStatusLabel);
                             $workOrderStartTime = format_workorder_time_value((string) ($workOrder['Start_Time'] ?? ''));
                             $workOrderEndTime = format_workorder_time_value((string) ($workOrder['End_Time'] ?? ''));
+                            $workOrderPeriodText = workorder_period_label($workOrder, $workOrderStartTime, $workOrderEndTime);
                             $workOrderTimeRangeText = '';
-                            if ($workOrderStartTime !== '' && $workOrderEndTime !== '') {
-                                $workOrderTimeRangeText = $workOrderStartTime . ' t/m ' . $workOrderEndTime;
-                            } elseif ($workOrderStartTime !== '') {
-                                $workOrderTimeRangeText = $workOrderStartTime;
-                            } elseif ($workOrderEndTime !== '') {
-                                $workOrderTimeRangeText = $workOrderEndTime;
+                            if ($workOrderPeriodText === '') {
+                                if ($workOrderStartTime !== '' && $workOrderEndTime !== '') {
+                                    $workOrderTimeRangeText = $workOrderStartTime . ' t/m ' . $workOrderEndTime;
+                                } elseif ($workOrderStartTime !== '') {
+                                    $workOrderTimeRangeText = $workOrderStartTime;
+                                } elseif ($workOrderEndTime !== '') {
+                                    $workOrderTimeRangeText = $workOrderEndTime;
+                                }
                             }
                             ?>
                             <a class="card" href="<?= htmlspecialchars($listItemHref) ?>" data-nav-link>
@@ -6094,9 +6135,13 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                                 </div>
                                 <div class="meta">
                                     <b>Uitvoerdatum</b>:
-                                    <?= htmlspecialchars(nl_date((string) ($workOrder['Start_Date'] ?? ''))) ?>
-                                    <?php if ($workOrderTimeRangeText !== ''): ?>
-                                        · <?= htmlspecialchars($workOrderTimeRangeText) ?>
+                                    <?php if ($workOrderPeriodText !== ''): ?>
+                                        <?= htmlspecialchars($workOrderPeriodText) ?>
+                                    <?php else: ?>
+                                        <?= htmlspecialchars(nl_date((string) ($workOrder['Start_Date'] ?? ''))) ?>
+                                        <?php if ($workOrderTimeRangeText !== ''): ?>
+                                            · <?= htmlspecialchars($workOrderTimeRangeText) ?>
+                                        <?php endif; ?>
                                     <?php endif; ?><br />
                                     <?php if (is_all_resources_selection($selectedResourceNo)): ?>
                                         <b>Monteur</b>:

@@ -23,7 +23,7 @@ const DAILY_BRIEFING_DEFAULT_HISTORY = 5;
 const DAILY_BRIEFING_MAX_HISTORY = 10;
 const DAILY_BRIEFING_DEFAULT_BUDGET = 40;
 const DAILY_BRIEFING_REQUEST_TIMEOUT = 10;
-const DAILY_BRIEFING_WORKORDER_FIELDS = 'No,Task_Code,Task_Description,Status,Main_Entity_Description,Component_No,Component_Description,Start_Date,Start_Time,End_Time,Resource_No';
+const DAILY_BRIEFING_WORKORDER_FIELDS = 'No,Task_Code,Task_Description,Status,Main_Entity_Description,Component_No,Component_Description,Start_Date,Start_Time,End_Date,End_Time,Resource_No';
 
 /**
  * Functies
@@ -156,11 +156,11 @@ function daily_briefing_fetch_company_workorders(string $environment, string $co
 {
     $url = odata_company_url($environment, $company, 'AppWerkorders', [
         '$select' => DAILY_BRIEFING_WORKORDER_FIELDS,
-        '$filter' => 'Start_Date ge ' . $day . ' and Start_Date le ' . $day,
+        '$filter' => workorder_odata_overlap_filter($day, $day),
         '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
     ]);
 
-    return odata_get_all($url, $auth, odata_ttl('workorders_list'));
+    return workorder_rows_on_day(odata_get_all($url, $auth, odata_ttl('workorders_list')), $day);
 }
 
 /**

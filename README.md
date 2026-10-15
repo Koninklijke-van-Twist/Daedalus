@@ -95,7 +95,7 @@ A partial Business Central failure still returns `200`:
 - with `scope=subscribers`: an `error` field on each affected resource
 - with `scope=all`: a top-level `errors` list
 
-Work orders come from the `AppWerkorders` page only, never from `Werkorders`. Cancelled work orders are skipped.
+Work orders come from the `AppWerkorders` page only, never from `Werkorders`. Cancelled work orders are skipped. A work order is included on every date from `Start_Date` through `End_Date`, inclusive. If `End_Date` is missing or earlier than `Start_Date`, only `Start_Date` is used.
 
 `history` holds only the text from the named ranges `Opmerkingen` and `Storingsdiagnose` in the `.xlsm` service report. If there is no xlsm, the text comes from the Opmerkingen/Advies sections of the PDF, but only when `pdftotext` is available. Names of known engineers, e-mail addresses, phone numbers and signature/name lines are removed (best effort). Report headers and customer details are never read. `has_notes` is `false` when every text is empty or trivial (`-`, `geen`, `n.v.t.`, …).
 

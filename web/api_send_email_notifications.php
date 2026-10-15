@@ -926,7 +926,7 @@ function fetch_workorders_for_resource_by_created_on(
     $operator = $inclusive ? 'ge' : 'gt';
     $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and Created_On " . $operator . ' ' . $normalizedDate;
     $url = odata_company_url($environment, $company, 'AppWerkorders', [
-        '$select' => 'No,Task_Code,Task_Description,Status,Main_Entity_Description,Component_Description,Start_Date,Start_Time,End_Time,Created_On,Created_Date_Time',
+        '$select' => 'No,Task_Code,Task_Description,Status,Main_Entity_Description,Component_Description,Start_Date,Start_Time,End_Date,End_Time,Created_On,Created_Date_Time',
         '$filter' => $filter,
         '$orderby' => 'Created_On asc,Created_Date_Time asc,No asc',
     ]);
@@ -955,7 +955,7 @@ function fetch_workorders_for_resource_by_date(
     $operator = $inclusive ? 'ge' : 'gt';
     $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and Start_Date " . $operator . ' ' . $normalizedDate;
     $url = odata_company_url($environment, $company, 'AppWerkorders', [
-        '$select' => 'No,Task_Code,Task_Description,Status,Main_Entity_Description,Component_Description,Start_Date,Start_Time,End_Time',
+        '$select' => 'No,Task_Code,Task_Description,Status,Main_Entity_Description,Component_Description,Start_Date,Start_Time,End_Date,End_Time',
         '$filter' => $filter,
         '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
     ]);
@@ -981,7 +981,7 @@ function fetch_workorders_for_resource_on_day(
         return [];
     }
 
-    $selectFields = ['No', 'Task_Code', 'Task_Description', 'Status', 'Main_Entity_Description', 'Component_Description', 'Start_Date', 'Start_Time', 'End_Time'];
+    $selectFields = ['No', 'Task_Code', 'Task_Description', 'Status', 'Main_Entity_Description', 'Component_Description', 'Start_Date', 'Start_Time', 'End_Date', 'End_Time'];
     foreach ($extraSelectFields as $extraField) {
         $extraField = trim((string) $extraField);
         if ($extraField !== '' && preg_match('/^[A-Za-z0-9_]+$/', $extraField) === 1 && !in_array($extraField, $selectFields, true)) {
@@ -989,14 +989,14 @@ function fetch_workorders_for_resource_on_day(
         }
     }
 
-    $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and Start_Date ge " . $normalizedDay . ' and Start_Date le ' . $normalizedDay;
+    $filter = "Resource_No eq '" . odata_quote_string($normalizedResourceNo) . "' and " . workorder_odata_overlap_filter($normalizedDay, $normalizedDay);
     $url = odata_company_url($environment, $company, 'AppWerkorders', [
         '$select' => implode(',', $selectFields),
         '$filter' => $filter,
         '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
     ]);
 
-    return odata_get_all($url, $auth, odata_ttl('workorders_list'));
+    return workorder_rows_on_day(odata_get_all($url, $auth, odata_ttl('workorders_list')), $normalizedDay);
 }
 
 function workorder_link(string $company, string $resourceNo, string $workOrderNo): string
@@ -1165,7 +1165,7 @@ function build_email_html(string $company, string $resourceNo, string $resourceN
             continue;
         }
 
-        $workOrderStartDateRaw = (string) ($workOrder['Start_Date'] ?? '');
+        $workOrderStartDateRaw = (string) ($workOrder['_list_day'] ?? $workOrder['Start_Date'] ?? '');
         $workOrderDayKey = workorder_day_key($workOrderStartDateRaw);
         if ($workOrderDayKey === '') {
             $workOrderDayKey = '__onbekend__';
@@ -1205,13 +1205,16 @@ function build_email_html(string $company, string $resourceNo, string $resourceN
 
         $startTime = format_workorder_time_value((string) ($workOrder['Start_Time'] ?? ''));
         $endTime = format_workorder_time_value((string) ($workOrder['End_Time'] ?? ''));
+        $periodText = workorder_period_label($workOrder, $startTime, $endTime);
         $timeRangeText = '';
-        if ($startTime !== '' && $endTime !== '') {
-            $timeRangeText = $startTime . ' t/m ' . $endTime;
-        } elseif ($startTime !== '') {
-            $timeRangeText = $startTime;
-        } elseif ($endTime !== '') {
-            $timeRangeText = $endTime;
+        if ($periodText === '') {
+            if ($startTime !== '' && $endTime !== '') {
+                $timeRangeText = $startTime . ' t/m ' . $endTime;
+            } elseif ($startTime !== '') {
+                $timeRangeText = $startTime;
+            } elseif ($endTime !== '') {
+                $timeRangeText = $endTime;
+            }
         }
 
         $cardsHtml .= '<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:separate;border-spacing:0;background:#ffffff;border:1px solid #dbe4ee;border-radius:12px;margin:0 0 10px 0;">';
@@ -1232,9 +1235,13 @@ function build_email_html(string $company, string $resourceNo, string $resourceN
         $cardsHtml .= '</table>';
 
         $cardsHtml .= '<div style="margin-top:6px;font-size:14px;color:#5f7287;line-height:1.35;">';
-        $cardsHtml .= '<b>Uitvoerdatum</b>: ' . safe_text_html(nl_date_safe((string) ($workOrder['Start_Date'] ?? '')));
-        if ($timeRangeText !== '') {
-            $cardsHtml .= ' · ' . safe_text_html($timeRangeText);
+        if ($periodText !== '') {
+            $cardsHtml .= '<b>Uitvoerdatum</b>: ' . safe_text_html($periodText);
+        } else {
+            $cardsHtml .= '<b>Uitvoerdatum</b>: ' . safe_text_html(nl_date_safe((string) ($workOrder['Start_Date'] ?? '')));
+            if ($timeRangeText !== '') {
+                $cardsHtml .= ' · ' . safe_text_html($timeRangeText);
+            }
         }
         $cardsHtml .= '<br />';
         $cardsHtml .= '<b>Object</b>: ' . safe_text_html((string) ($workOrder['Main_Entity_Description'] ?? '-')) . '<br />';
@@ -1441,6 +1448,11 @@ if (!defined('DAEDALUS_EMAIL_NOTIFICATIONS_LIB_ONLY')) {
                     );
 
                     if (!empty($dailyWorkOrders)) {
+                        foreach ($dailyWorkOrders as $dailyIndex => $dailyWorkOrder) {
+                            if (is_array($dailyWorkOrder)) {
+                                $dailyWorkOrders[$dailyIndex]['_list_day'] = $todayUtc;
+                            }
+                        }
                         $dailyWorkOrderNos = array_map(static fn(array $workOrder): string => trim((string) ($workOrder['No'] ?? '')), $dailyWorkOrders);
                         $dailyMaterialSummary = fetch_workorder_material_summary_for_workorders($environment, $company, $dailyWorkOrderNos, $auth);
                         $dailyWebfleetLabels = fetch_webfleet_status_labels_for_workorders($environment, $company, $dailyWorkOrderNos, $auth);
