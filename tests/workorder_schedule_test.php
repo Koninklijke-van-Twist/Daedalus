@@ -131,11 +131,81 @@ same([], workorder_rows_on_day([$endBeforeStart], '2026-10-07'), 'ongeldige eind
 $example = ['Start_Date' => '2026-10-15', 'Start_Time' => '09:00:00', 'End_Date' => '2026-10-17', 'End_Time' => '17:00:00'];
 same(['2026-10-15', '2026-10-16', '2026-10-17'], workorder_days_in_range($example, ymd('2026-10-01'), ymd('2026-10-31')), '15 t/m 17 inclusief de gedeeltelijke dagen');
 
+$dayFilters = workorder_odata_overlap_filters('2026-10-15', '2026-10-15');
 same(
-    'Start_Date le 2026-10-15 and (Start_Date ge 2026-10-15 or End_Date ge 2026-10-15)',
-    workorder_odata_overlap_filter('2026-10-15', '2026-10-15'),
-    'dagfilter zoekt overlap in plaats van alleen Start_Date'
+    [
+        'Start_Date ge 2026-10-15 and Start_Date le 2026-10-15',
+        'Start_Date le 2026-10-15 and End_Date ge 2026-10-15',
+    ],
+    $dayFilters,
+    'dagfilter zoekt overlap in twee queries zonder or over verschillende velden'
 );
+foreach ($dayFilters as $dayFilter) {
+    check(!odata_filter_has_cross_field_or($dayFilter), 'gegenereerd dagfilter zonder cross-field or: ' . $dayFilter);
+    check(
+        !odata_filter_has_cross_field_or("Resource_No eq '1001' and " . $dayFilter),
+        'filter voor één monteur zonder cross-field or: ' . $dayFilter
+    );
+}
+$weekFilters = workorder_odata_overlap_filters('2026-10-15', '2026-10-21');
+same(
+    [
+        'Start_Date ge 2026-10-15 and Start_Date le 2026-10-21',
+        'Start_Date le 2026-10-21 and End_Date ge 2026-10-15',
+    ],
+    $weekFilters,
+    'weekfilter begrenst start en eind zonder or'
+);
+foreach ($weekFilters as $weekFilter) {
+    check(!odata_filter_has_cross_field_or($weekFilter), 'gegenereerd weekfilter zonder cross-field or: ' . $weekFilter);
+}
+check(
+    odata_filter_has_cross_field_or('Start_Date le 2026-10-15 and (Start_Date ge 2026-10-15 or End_Date ge 2026-10-15)'),
+    'het oude overlapfilter met or tussen Start_Date en End_Date wordt herkend'
+);
+check(
+    !odata_filter_has_cross_field_or("(No eq 'WO1' or No eq 'WO2' or No eq 'WO3')"),
+    'or op hetzelfde veld blijft toegestaan'
+);
+check(
+    !odata_filter_has_cross_field_or("(Assigned_User_ID eq 'KVT\\monteur' or Assigned_User_ID eq 'MONTEUR')"),
+    'or op Assigned_User_ID blijft toegestaan'
+);
+check(
+    !odata_filter_has_cross_field_or('Starting_Date le 2026-10-21 and Ending_Date ge 2026-10-15'),
+    'and over verschillende velden blijft toegestaan'
+);
+check(!odata_filter_has_cross_field_or(''), 'leeg filter is geen cross-field or');
+
+$catalog = [
+    ['No' => 'SPAN', 'Start_Date' => '2026-10-01', 'Start_Time' => '08:00:00', 'End_Date' => '2026-12-31', 'End_Time' => '17:00:00'],
+    ['No' => 'DONE', 'Start_Date' => '2026-10-01', 'Start_Time' => '08:00:00', 'End_Date' => '2026-10-02', 'End_Time' => '17:00:00'],
+    ['No' => 'BOTH', 'Start_Date' => '2026-10-15', 'Start_Time' => '08:00:00', 'End_Date' => '2026-10-16', 'End_Time' => '12:00:00'],
+    ['No' => 'IN', 'Start_Date' => '2026-10-15', 'Start_Time' => '09:00:00', 'End_Date' => '2026-10-15', 'End_Time' => '11:00:00'],
+    ['No' => 'BLANK', 'Start_Date' => '2026-10-15', 'Start_Time' => '10:00:00'],
+    ['No' => 'EARLY', 'Start_Date' => '2026-10-08', 'End_Date' => '2026-10-07', 'Start_Time' => '09:00:00'],
+];
+$fetchCalls = 0;
+$sentFilters = [];
+$onDay = workorder_fetch_overlapping('2026-10-15', '2026-10-15', static function (string $filter) use (&$fetchCalls, &$sentFilters, $catalog): array {
+    $fetchCalls++;
+    $sentFilters[] = $filter;
+    check(!odata_filter_has_cross_field_or($filter), 'fetch stuurt geen cross-field or: ' . $filter);
+
+    return $catalog;
+});
+same(2, $fetchCalls, 'overlap gebruikt twee queries en voegt die samen');
+same($dayFilters, $sentFilters, 'fetch vraagt precies de twee overlapfilters');
+same(['SPAN', 'BOTH', 'IN', 'BLANK'], array_column($onDay, 'No'), 'PHP houdt meerdaagse orders en laat afgelopen of ongeldige einddatums weg');
+$lastDayCalls = 0;
+$onLastDay = workorder_fetch_overlapping('2026-12-31', '2026-12-31', static function (string $filter) use (&$lastDayCalls, $catalog): array {
+    $lastDayCalls++;
+    check(!odata_filter_has_cross_field_or($filter), 'laatste-dagfilter zonder cross-field or');
+
+    return $catalog;
+});
+same(2, $lastDayCalls, 'ook de laatste dag vraagt twee filters');
+same(['SPAN'], array_column($onLastDay, 'No'), 'order van 1 okt t/m 31 dec staat ook op de laatste dag');
 
 $index = (string) file_get_contents(__DIR__ . '/../web/index.php');
 $mail = (string) file_get_contents(__DIR__ . '/../web/api_send_email_notifications.php');
@@ -145,5 +215,36 @@ check(strpos($index, '/^40\d{5}$/') !== false, '40-nummerzoekfilter blijft intac
 check(strpos($index, "'\$select' => 'Start_Date,Start_Time'") !== false, 'laatste-werkorderquery haalt alleen startvelden op');
 check(substr_count($index, 'End_Date') === 3, 'End_Date staat in de lijst-, lookup- en detailquery van index.php');
 check(substr_count($mail, 'End_Date') >= 3, 'End_Date staat in de mailquery\'s');
+check(strpos($index, ' or End_Date') === false, 'index.php bouwt geen or op End_Date');
+check(strpos($mail, ' or End_Date') === false, 'de mail bouwt geen or op End_Date');
+$briefingSource = (string) file_get_contents(__DIR__ . '/../web/lib/daily_briefing.php');
+check(strpos($briefingSource, ' or End_Date') === false, 'de briefing bouwt geen or op End_Date');
+
+$mimirApi = 'mimir_test_key';
+$baseUrl = 'https://bc.example:7148/';
+$environment = 'Production';
+$auth = ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'];
+require __DIR__ . '/../web/odata.php';
+
+foreach ($dayFilters as $dayFilter) {
+    $technicianFilter = "Resource_No eq '1001' and " . $dayFilter;
+    $mimirUrl = odata_company_url('Production', 'Koninklijke van Twist', 'AppWerkorders', [
+        '$select' => 'No,Start_Date,End_Date',
+        '$filter' => $technicianFilter,
+        '$orderby' => 'Start_Date asc,Start_Time asc,No asc',
+    ]);
+    check(strpos($mimirUrl, 'https://mimir.invalid/') === 0, 'met $mimirApi gaat de URL eerst naar Mímir');
+    $parsed = odata_mimir_parse_entity_url($mimirUrl);
+    check(is_array($parsed), 'Mímir kan de OData-URL naar company/table vertalen');
+    same($technicianFilter, (string) ($parsed['query']['$filter'] ?? ''), 'Mímir krijgt hetzelfde filter');
+    check(!odata_filter_has_cross_field_or((string) ($parsed['query']['$filter'] ?? '')), 'Mímir-filter zonder cross-field or');
+
+    $directUrl = odata_bc_url_from_odata_url($mimirUrl);
+    check(strpos($directUrl, 'https://bc.example:7148/Production/ODataV4/') === 0, 'fallback herschrijft naar directe BC-OData');
+    $directQuery = [];
+    parse_str((string) parse_url($directUrl, PHP_URL_QUERY), $directQuery);
+    same($technicianFilter, (string) ($directQuery['$filter'] ?? ''), 'directe OData krijgt hetzelfde filter');
+    check(!odata_filter_has_cross_field_or((string) ($directQuery['$filter'] ?? '')), 'direct OData-filter zonder cross-field or');
+}
 
 fwrite(STDOUT, "OK {$assertions} assertions\n");

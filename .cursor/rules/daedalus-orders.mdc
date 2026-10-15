@@ -13,7 +13,7 @@ alwaysApply: false
 
 ## Lijst en filters
 - Werkorders en assemblageorders in één lijst. Een werkorder staat op élke dag van `Start_Date` t/m `End_Date` (inclusief). Ontbreekt `End_Date` of ligt die vóór de start, dan alleen de startdatum. Assemblage op effectieve lijstdatum.
-- Werkorder-datumfilter: overlap van `Start_Date`/`End_Date` met de gekozen reeks, niet alleen de startdatum. Directe orderlookup (`^ASS\d{5,10}$`, `^WO\d{5,10}$`, `^40\d{5}$`) blijft ongewijzigd.
+- Werkorder-datumfilter: overlap van `Start_Date`/`End_Date` met de gekozen reeks, niet alleen de startdatum. BC on-prem OData ondersteunt geen `or` over verschillende velden; de overlap gaat daarom in twee AND-filters (start in de reeks, en `End_Date` die de reeks nog raakt) en de dagen zelf worden in PHP bepaald. Zelfde `$filter` voor Mímir en directe OData. Directe orderlookup (`^ASS\d{5,10}$`, `^WO\d{5,10}$`, `^40\d{5}$`) blijft ongewijzigd.
 - Assemblage datumfilter: overlap `Starting_Date`/`Ending_Date` met gekozen range (niet alleen startdatum).
 - Assemblage lijstpositie: valt de order volledig binnen de bekeken range (`Starting_Date` t/m `Ending_Date`), dan sorteren en dagscheiding op vandaag; is `Ending_Date` al verstreken, dan op einddatum.
 - Werkorder-statusfilters gelden niet voor assemblageorders.

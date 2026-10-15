@@ -259,30 +259,47 @@ $GLOBALS['DAEDALUS_ODATA_BC_FETCH'] = static function (string $url, array $auth,
         if (strpos($select, 'End_Date') === false) {
             fail('AppWerkorders-query voor de briefing mist End_Date: ' . $select);
         }
-        $matchesDay = static function (array $workOrder, string $day): bool {
-            $start = substr((string) ($workOrder['Start_Date'] ?? ''), 0, 10);
-            $end = substr((string) ($workOrder['End_Date'] ?? ''), 0, 10);
-            if ($start === '' || $start > $day) {
-                return false;
-            }
-            if ($start === $day) {
-                return true;
-            }
+        if (function_exists('odata_filter_has_cross_field_or') && odata_filter_has_cross_field_or($filter)) {
+            fail('AppWerkorders-filter gebruikt or over verschillende velden: ' . $filter);
+        }
+        $resourceNo = null;
+        if (preg_match("/Resource_No eq '([^']*)'/", $filter, $resourceMatch) === 1) {
+            $resourceNo = $resourceMatch[1];
+        }
+        $mode = '';
+        $rangeEnd = '';
+        $rangeStart = '';
+        if (preg_match('/Start_Date ge (\d{4}-\d{2}-\d{2}) and Start_Date le (\d{4}-\d{2}-\d{2})/', $filter, $startMatch) === 1) {
+            $mode = 'start';
+            $rangeStart = $startMatch[1];
+            $rangeEnd = $startMatch[2];
+        } elseif (preg_match('/Start_Date le (\d{4}-\d{2}-\d{2}) and End_Date ge (\d{4}-\d{2}-\d{2})/', $filter, $endMatch) === 1) {
+            $mode = 'end';
+            $rangeEnd = $endMatch[1];
+            $rangeStart = $endMatch[2];
+        }
+        if ($mode === '') {
+            return [];
+        }
 
-            return $end !== '' && $end !== '0001-01-01' && $end >= $day;
-        };
-        if (preg_match("/^Resource_No eq '([^']*)' and Start_Date le (\\S+) and \\(Start_Date ge (\\S+) or End_Date ge (\\S+)\\)$/", $filter, $mm) === 1) {
-            return array_values(array_filter(
-                $workOrders,
-                static fn(array $w): bool => $w['Resource_No'] === $mm[1] && $mm[2] === $mm[3] && $mm[3] === $mm[4] && $matchesDay($w, $mm[2])
-            ));
-        }
-        if (preg_match('/^Start_Date le (\S+) and \(Start_Date ge (\S+) or End_Date ge (\S+)\)$/', $filter, $mm) === 1) {
-            return array_values(array_filter(
-                $workOrders,
-                static fn(array $w): bool => $mm[1] === $mm[2] && $mm[2] === $mm[3] && $matchesDay($w, $mm[1])
-            ));
-        }
+        return array_values(array_filter(
+            $workOrders,
+            static function (array $workOrder) use ($resourceNo, $mode, $rangeStart, $rangeEnd): bool {
+                if ($resourceNo !== null && (string) ($workOrder['Resource_No'] ?? '') !== $resourceNo) {
+                    return false;
+                }
+                $start = substr((string) ($workOrder['Start_Date'] ?? ''), 0, 10);
+                $end = substr((string) ($workOrder['End_Date'] ?? ''), 0, 10);
+                if ($start === '') {
+                    return false;
+                }
+                if ($mode === 'start') {
+                    return $start >= $rangeStart && $start <= $rangeEnd;
+                }
+
+                return $end !== '' && $end !== '0001-01-01' && $start <= $rangeEnd && $end >= $rangeStart;
+            }
+        ));
     }
 
     return [];
