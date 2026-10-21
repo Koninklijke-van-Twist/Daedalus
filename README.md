@@ -183,11 +183,16 @@ Cache files live under `web/cache/briefing/`:
 
 The directory is gitignored and excluded from FTP deploy. Every file starts with a PHP guard (`http_response_code(404); exit;`), and the directory also gets a `.htaccess` deny.
 
+## Analytics
+
+`web/analytics/analytics.sqlite` (and `*.sqlite-*`) stays on the server across deploys: the FTP mirror already skips those files. The same mirror skips `.htaccess`, so a committed file is not uploaded and an existing file is not deleted. `analytics.php` writes `web/analytics/.htaccess` when it is missing (or appends the rules when the word `sqlite` is not yet present), so Apache denies the database while `analytics.php` itself stays reachable.
+
 ### Tests
 
 ```
 php tests/briefing_test.php
 php tests/mimir_fallback_test.php
+php tests/analytics_protect_test.php
 ```
 
 Graph and Business Central are mocked in the tests, so they make no live calls. The xlsm fixtures are generated and contain no real customer data.
