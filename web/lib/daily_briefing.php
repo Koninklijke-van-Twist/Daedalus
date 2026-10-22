@@ -13,6 +13,7 @@
  */
 require_once __DIR__ . '/briefing_reports.php';
 require_once __DIR__ . '/briefing_notes.php';
+require_once __DIR__ . '/option_matches.php';
 
 /**
  * Constants
@@ -89,37 +90,9 @@ function daily_briefing_parse_date(string $value): ?string
     return $value;
 }
 
-/**
- * Robuuste vergelijking van BC-optiewaarden: Mímir geeft Nederlandse labels terug
- * ('Geannuleerd', 'Persoon'), direct BC Engelse ('Cancelled', 'Person'). Hoofdletters,
- * spaties en leestekens tellen niet mee.
- *
- * @param list<string> $candidates
- */
-function daily_briefing_option_matches($value, array $candidates): bool
-{
-    $normalize = static function ($input): string {
-        $text = mb_strtolower(trim((string) $input), 'UTF-8');
-        return preg_replace('/[^\p{L}\p{N}]+/u', '', $text) ?? $text;
-    };
-
-    $normalizedValue = $normalize($value);
-    if ($normalizedValue === '') {
-        return false;
-    }
-
-    foreach ($candidates as $candidate) {
-        if ($normalize($candidate) === $normalizedValue) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 function daily_briefing_is_cancelled(array $workOrder): bool
 {
-    return daily_briefing_option_matches($workOrder['Status'] ?? '', ['Cancelled', 'Canceled', 'Geannuleerd']);
+    return daily_briefing_option_matches($workOrder['Status'] ?? '', ['Cancelled', 'Canceled', 'Geannuleerd', 'Storniert']);
 }
 
 /**
