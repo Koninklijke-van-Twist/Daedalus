@@ -6,6 +6,7 @@ require __DIR__ . "/auth.php";
 require_once __DIR__ . "/logincheck.php";
 require_once __DIR__ . '/functions.php';
 require_once __DIR__ . "/odata.php";
+require_once __DIR__ . '/lib/option_matches.php';
 
 /**
  * Variabelen
@@ -1513,6 +1514,14 @@ function is_open_workorder_status(string $status): bool
         }
     }
 
+    // Engelse/Duitse optieteksten (BC-gebruiker niet op NL), ook met nummerprefix.
+    if (daily_briefing_option_matches($status, [
+        'Completed', 'Executed', 'Done', 'Signed', 'Checked', 'Invoiced', 'Canceled', 'Cancelled', 'Closed', 'Finished',
+        'Abgeschlossen', 'Geschlossen', 'Erledigt', 'Ausgeführt', 'Unterschrieben', 'Unterzeichnet', 'Kontrolliert', 'Geprüft', 'Fakturiert', 'Storniert',
+    ])) {
+        return false;
+    }
+
     return true;
 }
 
@@ -1523,22 +1532,22 @@ function status_is_exact(string $status, string $expected): bool
 
 function is_executed_workorder_status(string $status): bool
 {
-    return status_is_exact($status, 'uitgevoerd');
+    return daily_briefing_option_matches($status, ['Uitgevoerd', 'Completed', 'Executed', 'Ausgeführt', 'Erledigt']);
 }
 
 function is_closed_workorder_status(string $status): bool
 {
-    return status_is_exact($status, 'afgesloten');
+    return daily_briefing_option_matches($status, ['Afgesloten', 'Closed', 'Geschlossen', 'Abgeschlossen']);
 }
 
 function is_checked_workorder_status(string $status): bool
 {
-    return status_is_exact($status, 'gecontroleerd');
+    return daily_briefing_option_matches($status, ['Gecontroleerd', 'Checked', 'Verified', 'Kontrolliert', 'Geprüft']);
 }
 
 function is_signed_workorder_status(string $status): bool
 {
-    return status_is_exact($status, 'ondertekend');
+    return daily_briefing_option_matches($status, ['Ondertekend', 'Signed', 'Unterschrieben', 'Unterzeichnet']);
 }
 
 function status_enabled_default(string $status): bool
