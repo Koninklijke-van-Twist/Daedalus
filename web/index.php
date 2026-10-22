@@ -7843,4 +7843,4 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
     </script>
 </body>
 
-</html>
+</html>
