@@ -1131,17 +1131,21 @@ function fetch_item_task_flags_map(string $environment, string $company, array $
         return [];
     }
 
-    $filter = build_or_filter('No', $uniqueNos);
-    if ($filter === '') {
-        return [];
+    $rows = [];
+    foreach (array_chunk($uniqueNos, 20) as $chunkNos) {
+        $filter = build_or_filter('No', $chunkNos);
+        if ($filter === '') {
+            continue;
+        }
+
+        $url = odata_company_url($environment, $company, 'AppItemCard', [
+            '$select' => 'No,LVS_Maintenance_Task_Item',
+            '$filter' => $filter,
+        ]);
+
+        $rows = array_merge($rows, odata_get_all($url, $auth, odata_ttl('item_task_flags')));
     }
 
-    $url = odata_company_url($environment, $company, 'AppItemCard', [
-        '$select' => 'No,LVS_Maintenance_Task_Item',
-        '$filter' => $filter,
-    ]);
-
-    $rows = odata_get_all($url, $auth, odata_ttl('item_task_flags'));
     $result = [];
     foreach ($rows as $row) {
         $itemNo = trim((string) ($row['No'] ?? ''));
@@ -7843,4 +7847,4 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
     </script>
 </body>
 
-</html>
+</html>
