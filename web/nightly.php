@@ -23,14 +23,8 @@ header('Cache-Control: no-store');
 /**
  * Page load
  */
+// Alleen deze bedrijven hebben onderhoudscontracten.
 $companies = ['Koninklijke van Twist', 'Hunter van Twist'];
-if (odata_mimir_enabled()) {
-    try {
-        $companies = odata_mimir_list_companies(null);
-    } catch (Throwable $ignored) {
-        // hardcoded lijst blijft staan
-    }
-}
 
 $result = ['success' => true, 'recorded_at' => date('c'), 'zoek_klant' => []];
 foreach ($companies as $company) {

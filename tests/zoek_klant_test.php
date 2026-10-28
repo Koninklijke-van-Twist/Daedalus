@@ -35,9 +35,11 @@ zk_check(zk_contract_state($cache['contracts'][0], $today) === 'actief', 'actief
 zk_check(zk_contract_state($cache['contracts'][1], $today) === 'verlopen', 'verlopen');
 zk_check(zk_contract_state($cache['contracts'][2], $today) === 'open', 'open');
 zk_check(zk_contract_state($cache['contracts'][3], $today) === 'toekomstig', 'toekomstig');
+zk_check(zk_contract_state(['status' => 'Open', 'start' => '2024-01-01', 'end' => '2025-12-31'], $today) === 'verlopen', 'open + verlopen = verlopen');
 
 $r = zk_search($cache, 'attero', $today);
 zk_check(count($r) === 2 && $r[0]['no'] === '40000001' && $r[0]['state'] === 'actief', 'actief eerst');
+zk_check($r[1]['state'] === 'verlopen', 'verlopen na actief');
 zk_check(count(zk_search($cache, '10398 oud', $today)) === 1, 'AND over woorden');
 zk_check(count(zk_search($cache, 'elsenga cafe', $today)) === 1, 'diacrieten');
 zk_check(count(zk_search($cache, 'roosendaal', $today)) === 1, 'locatie-adres');
