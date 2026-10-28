@@ -4495,6 +4495,26 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
             color: var(--text);
         }
 
+        .field-label-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+
+        .field-label-row label {
+            margin-bottom: 0;
+        }
+
+        .zoek-klant-link {
+            color: var(--primary);
+            font-weight: 600;
+            font-size: .85rem;
+            text-decoration: none;
+            padding: 6px 0 2px 12px;
+        }
+
         .company-select-row {
             display: flex;
             align-items: center;
@@ -5596,7 +5616,10 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                 </div>
             </div>
             <div class="field">
-                <label for="person">Servicemonteur</label>
+                <div class="field-label-row">
+                    <label for="person">Servicemonteur</label>
+                    <a href="zoek_klant.php?company=<?= rawurlencode($company) ?>" class="zoek-klant-link">Zoek Klant</a>
+                </div>
                 <select id="person" name="person" onchange="this.form.submit()"
                     data-counts-url="<?= htmlspecialchars($resourceCountsUrl) ?>"
                     data-own-resource="<?= htmlspecialchars($ownResourceNo) ?>"
