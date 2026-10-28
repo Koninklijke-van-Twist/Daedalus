@@ -249,16 +249,16 @@ function zk_join(array $headers, array $lines, array $locations = []): array
 function zk_contract_state(array $contract, string $today): string
 {
     $status = zk_normalize((string) ($contract['status'] ?? ''));
+    $start = (string) ($contract['start'] ?? '');
+    $end = (string) ($contract['end'] ?? '');
+    if ($end !== '' && $end !== '0001-01-01' && $end < $today) {
+        return 'verlopen';
+    }
     if (!in_array($status, ['vrijgegeven', 'released', 'freigegeben'], true)) {
         return 'open';
     }
-    $start = (string) ($contract['start'] ?? '');
-    $end = (string) ($contract['end'] ?? '');
     if ($start !== '' && $start !== '0001-01-01' && $start > $today) {
         return 'toekomstig';
-    }
-    if ($end !== '' && $end !== '0001-01-01' && $end < $today) {
-        return 'verlopen';
     }
     return 'actief';
 }

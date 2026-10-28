@@ -285,12 +285,10 @@ if ($ajax === 'results') {
                 clearTimeout(timer);
                 timer = setTimeout(search, 300);
             });
-            form.addEventListener('submit', function (e) {
-                if (document.activeElement === document.getElementById('company')) { return; }
-                e.preventDefault();
+            form.addEventListener('submit', function () {
+                // Enter/Zoek: gewone GET-submit (company + q), server rendert de resultaten.
                 clearTimeout(timer);
-                search();
-                input.blur();
+                seq++;
             });
         })();
     </script>
