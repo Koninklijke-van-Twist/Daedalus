@@ -196,3 +196,7 @@ php tests/analytics_protect_test.php
 ```
 
 Graph and Business Central are mocked in the tests, so they make no live calls. The xlsm fixtures are generated and contain no real customer data.
+
+## Zoek Klant (onderhoudscontracten)
+
+`web/zoek_klant.php` (link "Zoek Klant" bij Servicemonteur) zoekt of een klant een onderhoudscontract heeft. Data via Mímir (`Onderhoudscontract` + `AppMaintenanceContractLines` + optioneel `LVS_MainEntityCard`), per bedrijf gecachet in `web/cache/zoekklant/contracts_<bedrijf>.php` (PHP-guard + `.htaccess`, niet gedeployed). `web/nightly.php` ververst de cache; ontbreekt hij, dan wordt hij bij het eerste bezoek gebouwd. Test: `php tests/zoek_klant_test.php`.
