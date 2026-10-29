@@ -104,7 +104,7 @@ function odata_mimir_connect_timeout_seconds(): int
 
 function odata_mimir_timeout_seconds_for_sapi(string $sapi): int
 {
-    return strtolower($sapi) === 'cli' ? 600 : 25;
+    return strtolower($sapi) === 'cli' ? 600 : 90;
 }
 
 function odata_mimir_timeout_seconds(): int
@@ -1237,7 +1237,7 @@ function odata_get_json(string $url, array $auth): array
         CURLOPT_USERAGENT => $userAgent,
         // Web: liever een nette foutmelding dan een proxy-500; CLI houdt geen limiet.
         CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_TIMEOUT => PHP_SAPI === 'cli' ? 0 : 25,
+        CURLOPT_TIMEOUT => PHP_SAPI === 'cli' ? 0 : 90,
         CURLOPT_HTTPHEADER => [
             "Accept: application/json",
             "Accept-Language: nl-NL,nl;q=0.9,en;q=0.8",

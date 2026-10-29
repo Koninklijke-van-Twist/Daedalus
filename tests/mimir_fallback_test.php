@@ -146,8 +146,8 @@ if (odata_mimir_connect_timeout_seconds() !== 10) {
 if (odata_mimir_timeout_seconds_for_sapi('cli') !== 600) {
     fail('CLI-timeout moet 600s blijven');
 }
-if (odata_mimir_timeout_seconds_for_sapi('fpm-fcgi') !== 25 || odata_mimir_timeout_seconds_for_sapi('apache2handler') !== 25) {
-    fail('web-timeout moet ongeveer 25s zijn');
+if (odata_mimir_timeout_seconds_for_sapi('fpm-fcgi') !== 90 || odata_mimir_timeout_seconds_for_sapi('apache2handler') !== 90) {
+    fail('web-timeout moet ongeveer 90s zijn');
 }
 if (PHP_SAPI === 'cli' && odata_mimir_timeout_seconds() !== 600) {
     fail('huidige CLI-sapi moet de lange timeout gebruiken');
