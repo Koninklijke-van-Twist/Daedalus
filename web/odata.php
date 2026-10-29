@@ -104,7 +104,7 @@ function odata_mimir_connect_timeout_seconds(): int
 
 function odata_mimir_timeout_seconds_for_sapi(string $sapi): int
 {
-    return strtolower($sapi) === 'cli' ? 600 : 90;
+    return strtolower($sapi) === 'cli' ? 600 : 25;
 }
 
 function odata_mimir_timeout_seconds(): int
@@ -532,7 +532,10 @@ function odata_bc_url_from_odata_url(string $url): string
     return $rebuilt;
 }
 
-function odata_mimir_request(string $method, string $path, ?array $jsonBody = null): array
+/**
+ * @return CurlHandle|resource
+ */
+function odata_mimir_request_handle(string $method, string $path, ?array $jsonBody = null)
 {
     $apiKey = odata_mimir_api_key();
     if ($apiKey === '') {
@@ -574,7 +577,21 @@ function odata_mimir_request(string $method, string $path, ?array $jsonBody = nu
         $opts[CURLOPT_POSTFIELDS] = $payload;
     }
     curl_setopt_array($ch, $opts);
-    $raw = curl_exec($ch);
+    return $ch;
+}
+
+function odata_mimir_request(string $method, string $path, ?array $jsonBody = null): array
+{
+    $ch = odata_mimir_request_handle($method, $path, $jsonBody);
+    return odata_mimir_request_finish($ch, curl_exec($ch));
+}
+
+/**
+ * @param CurlHandle|resource $ch
+ * @param string|false $raw
+ */
+function odata_mimir_request_finish($ch, $raw): array
+{
     if ($raw === false) {
         $err = curl_error($ch);
         curl_close($ch);
@@ -788,16 +805,10 @@ function odata_mimir_company_environment_map(?string $environment = null): array
 }
 
 /**
- * Directe company/table-query via Mímir — geen BC-URL nodig.
- * $odataQuery gebruikt OData-keys zoals $select / $filter.
- *
  * @param array<string, mixed> $odataQuery
- * @return list<array<string, mixed>>
  */
-function odata_mimir_query_impl(string $company, string $table, array $odataQuery, int $ttlSeconds): array
+function odata_mimir_query_body(string $company, string $table, array $odataQuery, int $ttlSeconds): array
 {
-    consolelog("Mímir query company=$company table=$table\n");
-
     $body = [
         'company' => $company,
         'table' => $table,
@@ -824,6 +835,21 @@ function odata_mimir_query_impl(string $company, string $table, array $odataQuer
         $body['filter'] = $filter;
     }
 
+    return $body;
+}
+
+/**
+ * Directe company/table-query via Mímir — geen BC-URL nodig.
+ * $odataQuery gebruikt OData-keys zoals $select / $filter.
+ *
+ * @param array<string, mixed> $odataQuery
+ * @return list<array<string, mixed>>
+ */
+function odata_mimir_query_impl(string $company, string $table, array $odataQuery, int $ttlSeconds): array
+{
+    consolelog("Mímir query company=$company table=$table\n");
+
+    $body = odata_mimir_query_body($company, $table, $odataQuery, $ttlSeconds);
     $response = odata_mimir_request('POST', 'query.php', $body);
     if (!isset($response['value']) || !is_array($response['value'])) {
         odata_mimir_fail(new Exception("Mímir query-antwoord mist 'value'."));
@@ -958,11 +984,144 @@ if (odata_mimir_enabled()) {
     }
 }
 
+/**
+ * Server-Timing: per BC/Mímir-call alleen entiteit, filtervelden (geen waarden) en duur.
+ */
+function &odata_timings(): array
+{
+    static $timings = [];
+    return $timings;
+}
+
+function odata_timing_record(string $url, float $startedAt, string $note = ''): void
+{
+    $timings = &odata_timings();
+    $entity = preg_match('#/([A-Za-z_]+)(\?|$)#', (string) parse_url($url, PHP_URL_PATH) . '?', $m) === 1 ? $m[1] : 'odata';
+    parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+    preg_match_all('/([A-Za-z_]+)\s+(?:eq|ne|ge|le|gt|lt)\s/', (string) ($query['$filter'] ?? ''), $fields);
+    $desc = $entity . (empty($fields[1]) ? '' : ' ' . implode('+', array_unique($fields[1]))) . ($note !== '' ? ' ' . $note : '');
+    $timings[] = 'c' . (count($timings) + 1) . '_' . $entity . ';dur=' . round((microtime(true) - $startedAt) * 1000) . ';desc="' . $desc . '"';
+}
+
+function odata_server_timing_value(): string
+{
+    return implode(', ', odata_timings());
+}
+
+/**
+ * Webverzoek-geheugen: dezelfde URL+ttl wordt binnen één verzoek maar één keer opgehaald.
+ * Niet voor CLI (nachtelijke/uurlijkse jobs blijven zoals ze waren).
+ */
+function &odata_request_memo(): array
+{
+    static $memo = ['rows' => [], 'collect' => null];
+    return $memo;
+}
+
+/**
+ * Draait $collect om te zien welke (nog niet opgehaalde) Mímir-queries nodig zijn,
+ * haalt die parallel op en bewaart ze in het verzoekgeheugen. De echte code daarna
+ * gebruikt die resultaten; mislukte queries lopen gewoon opnieuw via odata_get_all
+ * (Mímir eerst, dan BC-fallback per call).
+ */
+function odata_prefetch(callable $collect): void
+{
+    $memo = &odata_request_memo();
+    if (PHP_SAPI === 'cli' || !odata_mimir_enabled() || odata_mimir_circuit_open() || $memo['collect'] !== null) {
+        return;
+    }
+
+    $memo['collect'] = [];
+    try {
+        $collect();
+    } catch (Throwable $exception) {
+    }
+    $pending = $memo['collect'];
+    $memo['collect'] = null;
+
+    $multi = curl_multi_init();
+    $handles = [];
+    foreach ($pending as $key => [$url, $ttlSeconds, $timeoutSeconds]) {
+        $parsed = odata_mimir_parse_entity_url($url);
+        if ($parsed === null) {
+            continue;
+        }
+        try {
+            $body = odata_mimir_query_body($parsed['company'], $parsed['entity'], $parsed['query'], $ttlSeconds === 0 ? 3600 : $ttlSeconds);
+            $handles[$key] = odata_mimir_request_handle('POST', 'query.php', $body);
+        } catch (Throwable $exception) {
+            continue;
+        }
+        if ($timeoutSeconds !== null) {
+            curl_setopt($handles[$key], CURLOPT_TIMEOUT, (int) $timeoutSeconds);
+        }
+        curl_multi_add_handle($multi, $handles[$key]);
+    }
+
+    do {
+        $status = curl_multi_exec($multi, $running);
+        if ($running > 0) {
+            curl_multi_select($multi, 1.0);
+        }
+    } while ($running > 0 && $status === CURLM_OK);
+
+    foreach ($handles as $key => $ch) {
+        $raw = curl_errno($ch) === 0 ? curl_multi_getcontent($ch) : false;
+        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $totalTime = (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME);
+        curl_multi_remove_handle($multi, $ch);
+        $failed = $raw === false || $code < 200 || $code >= 300;
+        odata_timing_record($pending[$key][0], microtime(true) - $totalTime, $failed ? 'parallel mislukt' : 'parallel');
+        if ($failed && $pending[$key][2] !== null) {
+            // Query met eigen tijdslimiet (bijv. vorige werkorders): leeg laten i.p.v. de pagina op te houden
+            // of de Mímir-circuitbreaker voor de rest van de pagina te laten springen.
+            curl_close($ch);
+            $memo['rows'][$key] = [];
+            continue;
+        }
+        try {
+            $response = odata_mimir_request_finish($ch, $raw);
+        } catch (Throwable $exception) {
+            continue;
+        }
+        if (isset($response['value']) && is_array($response['value'])) {
+            $normalized = odata_normalize_text_newlines_recursive($response['value']);
+            $memo['rows'][$key] = is_array($normalized) ? $normalized : [];
+        }
+    }
+    curl_multi_close($multi);
+}
+
 function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
 {
     consolelog("Fetching $url\n");
     $ttlSeconds = max(0, (int) $ttlSeconds);
 
+    if (PHP_SAPI !== 'cli') {
+        $memo = &odata_request_memo();
+        $memoKey = $ttlSeconds . '|' . $url;
+        if (isset($memo['rows'][$memoKey])) {
+            return $memo['rows'][$memoKey];
+        }
+        if ($memo['collect'] !== null) {
+            $memo['collect'][$memoKey] = [$url, $ttlSeconds, $GLOBALS['DAEDALUS_ODATA_PREFETCH_TIMEOUT'] ?? null];
+            return [];
+        }
+        $startedAt = microtime(true);
+        try {
+            $rows = odata_get_all_uncached($url, $auth, $ttlSeconds);
+        } finally {
+            odata_timing_record($url, $startedAt);
+        }
+        $memo['rows'][$memoKey] = $rows;
+        return $rows;
+    }
+
+    return odata_get_all_uncached($url, $auth, $ttlSeconds);
+}
+
+function odata_get_all_uncached(string $url, array $auth, int $ttlSeconds): array
+{
     if (odata_mimir_enabled()) {
         return odata_mimir_or_direct(
             static function () use ($url, $ttlSeconds): array {
@@ -1076,6 +1235,9 @@ function odata_get_json(string $url, array $auth): array
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_USERAGENT => $userAgent,
+        // Web: liever een nette foutmelding dan een proxy-500; CLI houdt geen limiet.
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => PHP_SAPI === 'cli' ? 0 : 25,
         CURLOPT_HTTPHEADER => [
             "Accept: application/json",
             "Accept-Language: nl-NL,nl;q=0.9,en;q=0.8",
