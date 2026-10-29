@@ -669,3 +669,31 @@ function workorder_multiday_calendar_slot(array $row, string $occurrenceYmd, ?st
         'all_day' => false,
     ];
 }
+
+/**
+ * Vorige werkorders: eerst op component, aanvullen met servicelocatie; zonder dubbelen, Start_Date aflopend.
+ */
+function merge_previous_workorders(array $componentRows, array $locationRows, string $currentNo, int $limit = 5): array
+{
+    $sortByStartDateDesc = static function (array $a, array $b): int {
+        return strcmp((string) ($b['Start_Date'] ?? ''), (string) ($a['Start_Date'] ?? ''));
+    };
+    usort($componentRows, $sortByStartDateDesc);
+    usort($locationRows, $sortByStartDateDesc);
+
+    $result = [];
+    foreach (['component' => $componentRows, 'locatie' => $locationRows] as $matchType => $rows) {
+        foreach ($rows as $row) {
+            $no = trim((string) ($row['No'] ?? ''));
+            if (count($result) >= $limit) {
+                break 2;
+            }
+            if ($no === '' || $no === $currentNo || isset($result[$no]) || trim((string) ($row['Status'] ?? '')) === 'Geannuleerd') {
+                continue;
+            }
+            $result[$no] = $row + ['_match' => $matchType];
+        }
+    }
+
+    return array_values($result);
+}
