@@ -14,6 +14,7 @@
 const ZK_CACHE_GUARD = "<?php http_response_code(404); exit; ?>\n";
 const ZK_PAGE_SIZE = 500;
 const ZK_MAX_AGE = 3600;
+const ZK_NIGHTLY_MAX_AGE = 14400; // nightly: gedeelde Mímir-cache (4 uur)
 
 /**
  * Functies: cache-opslag
@@ -77,12 +78,12 @@ function zk_save_cache(string $company, array $cache): void
  * @param list<string> $select
  * @return list<array<string, mixed>>
  */
-function zk_fetch_paged(string $company, string $table, string $keyField, array $select): array
+function zk_fetch_paged(string $company, string $table, string $keyField, array $select, int $maxAge = ZK_MAX_AGE): array
 {
     $rows = [];
     $last = '';
     for ($page = 0; $page < 100; $page++) {
-        $body = ['company' => $company, 'table' => $table, 'top' => ZK_PAGE_SIZE, 'max_age' => ZK_MAX_AGE, 'select' => $select];
+        $body = ['company' => $company, 'table' => $table, 'top' => ZK_PAGE_SIZE, 'max_age' => $maxAge, 'select' => $select];
         if ($last !== '') {
             $body['filter'] = $keyField . " gt '" . str_replace("'", "''", $last) . "'";
         }
@@ -112,10 +113,10 @@ function zk_fetch_paged(string $company, string $table, string $keyField, array 
 /**
  * @return list<array<string, mixed>>
  */
-function zk_fetch_all(string $company, string $table, array $select): array
+function zk_fetch_all(string $company, string $table, array $select, int $maxAge = ZK_MAX_AGE): array
 {
     $response = odata_mimir_request('POST', 'query.php', [
-        'company' => $company, 'table' => $table, 'top' => 0, 'max_age' => ZK_MAX_AGE, 'select' => $select,
+        'company' => $company, 'table' => $table, 'top' => 0, 'max_age' => $maxAge, 'select' => $select,
     ]);
     $value = $response['value'] ?? null;
     if (!is_array($value)) {
@@ -127,7 +128,7 @@ function zk_fetch_all(string $company, string $table, array $select): array
 /**
  * Haalt headers (kaart Onderhoudscontract, incl. adres), regels en servicelocaties op en schrijft de cache.
  */
-function zk_build_cache(string $company): array
+function zk_build_cache(string $company, int $maxAge = ZK_MAX_AGE): array
 {
     if (function_exists('set_time_limit')) {
         @set_time_limit(600);
@@ -137,14 +138,14 @@ function zk_build_cache(string $company): array
         'Contract_Type', 'Contract_No', 'Description', 'Customer_No', 'Name', 'Address', 'Post_Code', 'City',
         'Bill_to_Customer_No', 'Bill_to_Name', 'Bill_to_City', 'Your_Reference', 'KVT_External_Document_No',
         'Control11095585', 'Starting_Date', 'End_Date',
-    ]);
+    ], $maxAge);
     $lines = zk_fetch_all($company, 'AppMaintenanceContractLines', [
         'Contract_Type', 'Contract_No', 'Line_No', 'Main_Entity', 'Main_Entity_Description', 'Description',
         'Ship_to_Code', 'Contract_Customer_No', 'Start_Date', 'End_Date',
-    ]);
+    ], $maxAge);
     $locations = [];
     try {
-        $locationRows = zk_fetch_all($company, 'LVS_MainEntityCard', ['No', 'Description', 'KVT_Address', 'KVT_Post_Code', 'KVT_City']);
+        $locationRows = zk_fetch_all($company, 'LVS_MainEntityCard', ['No', 'Description', 'KVT_Address', 'KVT_Post_Code', 'KVT_City'], $maxAge);
         foreach ($locationRows as $row) {
             $locations[trim((string) ($row['No'] ?? ''))] = $row;
         }

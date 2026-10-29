@@ -30,7 +30,7 @@ $result = ['success' => true, 'recorded_at' => date('c'), 'zoek_klant' => []];
 foreach ($companies as $company) {
     try {
         odata_mimir_circuit_reset();
-        $cache = zk_build_cache((string) $company);
+        $cache = zk_build_cache((string) $company, ZK_NIGHTLY_MAX_AGE);
         $result['zoek_klant'][$company] = ['success' => true, 'contracts' => count($cache['contracts'])];
     } catch (Throwable $exception) {
         $result['zoek_klant'][$company] = ['success' => false, 'error' => $exception->getMessage()];
