@@ -2057,9 +2057,9 @@ function fetch_single_werkorder_row_by_no(
     );
 }
 
-function fetch_previous_workorders(string $environment, string $company, string $workOrderNo, array $auth): array
+function fetch_previous_workorders(string $environment, string $company, array $current, array $auth): array
 {
-    $current = fetch_single_werkorder_row_by_no($environment, $company, $workOrderNo, 'No,Component_No,Main_Entity', $auth);
+    $workOrderNo = (string) ($current['No'] ?? '');
     $rowsByField = [];
     foreach (['Component_No', 'Main_Entity'] as $field) {
         $value = trim((string) ($current[$field] ?? ''));
@@ -2101,7 +2101,7 @@ function fetch_werkorder_visit_contact_by_no(string $environment, string $compan
         $environment,
         $company,
         $workOrderNo,
-        'No,KVT_Primary_Contact_No,KVT_Primary_Contact_Phone_No,Visit_Country_Region_Code',
+        'No,KVT_Primary_Contact_No,KVT_Primary_Contact_Phone_No,Visit_Country_Region_Code,Main_Entity',
         $auth
     );
 }
@@ -3387,7 +3387,152 @@ try {
         }
     }
 
-    if ($selectedResourceNo !== '') {
+    if ($selectedWorkOrderNo !== '') {
+        $selectedUrl = odata_company_url($environment, $company, 'AppWerkorders', [
+            '$select' => 'No,Task_Code,Task_Description,Resource_Name,Main_Entity_Description,Component_No,Component_Description,Start_Date,Start_Time,End_Date,End_Time,Job_No,KVT_Memo,KVT_Memo_Internal_Use_Only',
+            '$filter' => "No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
+        ]);
+        $selectedRows = odata_get_all($selectedUrl, $auth, odata_ttl('workorder_detail'));
+        $selectedWorkOrder = $selectedRows[0] ?? null;
+
+        if ($selectedWorkOrder !== null) {
+            if (isset($workOrderWebfleetStatusLabels[$selectedWorkOrderNo])) {
+                $selectedWorkOrderWebfleetStatusLabel = safe_text((string) $workOrderWebfleetStatusLabels[$selectedWorkOrderNo]);
+            } else {
+                $selectedWebfleetMap = fetch_webfleet_status_labels_for_workorders(
+                    $environment,
+                    $company,
+                    [$selectedWorkOrderNo],
+                    $auth
+                );
+                $selectedWorkOrderWebfleetStatusLabel = safe_text((string) (
+                    $selectedWebfleetMap[$selectedWorkOrderNo] ?? webfleet_default_status_label()
+                ));
+            }
+
+            $selectedWorkOrderStartTime = format_workorder_time_value((string) ($selectedWorkOrder['Start_Time'] ?? ''));
+            $selectedWorkOrderEndTime = format_workorder_time_value((string) ($selectedWorkOrder['End_Time'] ?? ''));
+            $selectedWorkOrderPeriod = workorder_period_label(
+                $selectedWorkOrder,
+                $selectedWorkOrderStartTime,
+                $selectedWorkOrderEndTime
+            );
+
+            $selectedWorkOrderMaterialSummary = fetch_workorder_material_summary_for_workorders(
+                $environment,
+                $company,
+                [$selectedWorkOrderNo],
+                $auth
+            );
+            $selectedWorkOrderMaterialStatusLabel = safe_text((string) (
+                $selectedWorkOrderMaterialSummary['labels'][$selectedWorkOrderNo] ?? 'Onbekend'
+            ));
+
+            $visitContactRow = fetch_werkorder_visit_contact_by_no($environment, $company, $selectedWorkOrderNo, $auth);
+            if (!empty($visitContactRow)) {
+                $selectedWorkOrder = array_merge($selectedWorkOrder, $visitContactRow);
+            }
+
+            $primaryContactNo = trim((string) ($selectedWorkOrder['KVT_Primary_Contact_No'] ?? ''));
+            if ($primaryContactNo !== '') {
+                $selectedWorkOrderPrimaryContactName = fetch_contact_name_by_no(
+                    $environment,
+                    $company,
+                    $primaryContactNo,
+                    $auth
+                );
+            }
+
+            $componentNo = trim((string) ($selectedWorkOrder['Component_No'] ?? ''));
+            if ($componentNo !== '') {
+                $selectedWorkOrderVisitAddress = fetch_component_parking_address_by_no(
+                    $environment,
+                    $company,
+                    $componentNo,
+                    $auth
+                );
+            }
+
+            $selectedWorkOrderIsRevision = workorder_is_revision($selectedWorkOrder);
+
+
+            $revisionLineSelect = 'Line_No,Type,No,Description,Description_2,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Qty_Picked';
+            $standardLineSelect = 'Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Expected_Receipt_Date';
+            $linesUrl = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
+                '$select' => $selectedWorkOrderIsRevision ? $revisionLineSelect : $standardLineSelect,
+                '$filter' => "LVS_Work_Order_No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
+                '$orderby' => 'Line_No asc',
+            ]);
+            $planningLinesAll = odata_get_all($linesUrl, $auth, odata_ttl('planning_lines'));
+
+            if ($selectedWorkOrderIsRevision) {
+                $revisionDisplayLines = array_map(
+                    static fn(array $line): array => map_planning_line_to_display_line($line),
+                    $planningLinesAll
+                );
+                $workOrderRevisionDisplayBlocks = build_assembly_display_blocks($revisionDisplayLines);
+                $workOrderRevisionIncompleteArtikelKeys = assembly_incomplete_artikel_line_keys(
+                    $workOrderRevisionDisplayBlocks
+                );
+
+                $selectedWorkOrderRealArticleCount = 0;
+                foreach ($revisionDisplayLines as $revisionLine) {
+                    if (assembly_line_type_is_artikel((string) ($revisionLine['Type'] ?? ''))) {
+                        $selectedWorkOrderRealArticleCount++;
+                    }
+                }
+            } else {
+                $planningLines = array_values(array_filter($planningLinesAll, static function (array $line): bool {
+                    $type = strtolower(trim((string) ($line['Type'] ?? '')));
+                    return $type === 'item' || $type === 'artikel';
+                }));
+
+                $itemNos = [];
+                foreach ($planningLines as $line) {
+                    $itemNo = trim((string) ($line['No'] ?? ''));
+                    if ($itemNo !== '') {
+                        $itemNos[] = $itemNo;
+                    }
+                }
+
+                $itemTaskFlagsMap = fetch_item_task_flags_map($environment, $company, $itemNos, $auth);
+                $splitLines = split_task_article_lines($planningLines, $itemTaskFlagsMap);
+                $taskArticleLines = $splitLines['task'];
+                $planningLines = $splitLines['article'];
+
+                $binLocationMaps = fetch_bin_location_maps($environment, $company, $planningLines, $auth);
+                $planningLines = apply_bin_locations_to_lines($planningLines, $binLocationMaps);
+
+                $selectedWorkOrderRealArticleCount = count($planningLines);
+            }
+
+            // Als laatste: een trage/mislukte lookup mag de rest van de detailpagina niet ophouden.
+            try {
+                $previousWorkOrders = fetch_previous_workorders($environment, $company, $selectedWorkOrder, $auth);
+            } catch (Throwable $exception) {
+                $previousWorkOrders = [];
+            }
+        }
+    }
+
+    if ($selectedAssemblyNo !== '') {
+        $selectedAssemblyOrderRow = fetch_single_assembly_row_by_no(
+            $environment,
+            $company,
+            $selectedAssemblyNo,
+            'No,Item_No,Description,Starting_Date,Ending_Date,Remaining_Quantity,Status,Unit_of_Measure_Code',
+            $auth
+        );
+        if (!empty($selectedAssemblyOrderRow)) {
+            $selectedAssemblyOrder = $selectedAssemblyOrderRow;
+            $assemblyLines = fetch_assembly_lines_by_no($environment, $company, $selectedAssemblyNo, $auth);
+            $assemblyDisplayBlocks = build_assembly_display_blocks($assemblyLines);
+            $assemblyIncompleteArtikelKeys = assembly_incomplete_artikel_line_keys($assemblyDisplayBlocks);
+        }
+    }
+
+    // Lijst alleen ophalen als er geen detail getoond wordt (scheelt tientallen BC-calls per detailpagina).
+    if ($selectedResourceNo !== '' && $selectedWorkOrder === null && $selectedAssemblyOrder === null) {
         $directOrderSearch = parse_direct_order_search($searchQuery);
         $isDirectOrderSearch = $directOrderSearch !== null;
 
@@ -3755,148 +3900,6 @@ try {
         }
 
         $mergedOrderList = merge_orders_by_date($workOrders, $assemblyOrders, $rangeStart, $rangeEnd, $today);
-    }
-
-    if ($selectedWorkOrderNo !== '') {
-        $selectedUrl = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Resource_Name,Main_Entity_Description,Component_No,Component_Description,Start_Date,Start_Time,End_Date,End_Time,Job_No,KVT_Memo,KVT_Memo_Internal_Use_Only',
-            '$filter' => "No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
-        ]);
-        $selectedRows = odata_get_all($selectedUrl, $auth, odata_ttl('workorder_detail'));
-        $selectedWorkOrder = $selectedRows[0] ?? null;
-
-        if ($selectedWorkOrder !== null) {
-            if (isset($workOrderWebfleetStatusLabels[$selectedWorkOrderNo])) {
-                $selectedWorkOrderWebfleetStatusLabel = safe_text((string) $workOrderWebfleetStatusLabels[$selectedWorkOrderNo]);
-            } else {
-                $selectedWebfleetMap = fetch_webfleet_status_labels_for_workorders(
-                    $environment,
-                    $company,
-                    [$selectedWorkOrderNo],
-                    $auth
-                );
-                $selectedWorkOrderWebfleetStatusLabel = safe_text((string) (
-                    $selectedWebfleetMap[$selectedWorkOrderNo] ?? webfleet_default_status_label()
-                ));
-            }
-
-            $selectedWorkOrderStartTime = format_workorder_time_value((string) ($selectedWorkOrder['Start_Time'] ?? ''));
-            $selectedWorkOrderEndTime = format_workorder_time_value((string) ($selectedWorkOrder['End_Time'] ?? ''));
-            $selectedWorkOrderPeriod = workorder_period_label(
-                $selectedWorkOrder,
-                $selectedWorkOrderStartTime,
-                $selectedWorkOrderEndTime
-            );
-
-            $selectedWorkOrderMaterialSummary = fetch_workorder_material_summary_for_workorders(
-                $environment,
-                $company,
-                [$selectedWorkOrderNo],
-                $auth
-            );
-            $selectedWorkOrderMaterialStatusLabel = safe_text((string) (
-                $selectedWorkOrderMaterialSummary['labels'][$selectedWorkOrderNo] ?? 'Onbekend'
-            ));
-
-            $visitContactRow = fetch_werkorder_visit_contact_by_no($environment, $company, $selectedWorkOrderNo, $auth);
-            if (!empty($visitContactRow)) {
-                $selectedWorkOrder = array_merge($selectedWorkOrder, $visitContactRow);
-            }
-
-            $primaryContactNo = trim((string) ($selectedWorkOrder['KVT_Primary_Contact_No'] ?? ''));
-            if ($primaryContactNo !== '') {
-                $selectedWorkOrderPrimaryContactName = fetch_contact_name_by_no(
-                    $environment,
-                    $company,
-                    $primaryContactNo,
-                    $auth
-                );
-            }
-
-            $componentNo = trim((string) ($selectedWorkOrder['Component_No'] ?? ''));
-            if ($componentNo !== '') {
-                $selectedWorkOrderVisitAddress = fetch_component_parking_address_by_no(
-                    $environment,
-                    $company,
-                    $componentNo,
-                    $auth
-                );
-            }
-
-            $selectedWorkOrderIsRevision = workorder_is_revision($selectedWorkOrder);
-
-            try {
-                $previousWorkOrders = fetch_previous_workorders($environment, $company, $selectedWorkOrderNo, $auth);
-            } catch (Throwable $exception) {
-                $previousWorkOrders = [];
-            }
-
-            $revisionLineSelect = 'Line_No,Type,No,Description,Description_2,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Qty_Picked';
-            $standardLineSelect = 'Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Expected_Receipt_Date';
-            $linesUrl = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
-                '$select' => $selectedWorkOrderIsRevision ? $revisionLineSelect : $standardLineSelect,
-                '$filter' => "LVS_Work_Order_No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
-                '$orderby' => 'Line_No asc',
-            ]);
-            $planningLinesAll = odata_get_all($linesUrl, $auth, odata_ttl('planning_lines'));
-
-            if ($selectedWorkOrderIsRevision) {
-                $revisionDisplayLines = array_map(
-                    static fn(array $line): array => map_planning_line_to_display_line($line),
-                    $planningLinesAll
-                );
-                $workOrderRevisionDisplayBlocks = build_assembly_display_blocks($revisionDisplayLines);
-                $workOrderRevisionIncompleteArtikelKeys = assembly_incomplete_artikel_line_keys(
-                    $workOrderRevisionDisplayBlocks
-                );
-
-                $selectedWorkOrderRealArticleCount = 0;
-                foreach ($revisionDisplayLines as $revisionLine) {
-                    if (assembly_line_type_is_artikel((string) ($revisionLine['Type'] ?? ''))) {
-                        $selectedWorkOrderRealArticleCount++;
-                    }
-                }
-            } else {
-                $planningLines = array_values(array_filter($planningLinesAll, static function (array $line): bool {
-                    $type = strtolower(trim((string) ($line['Type'] ?? '')));
-                    return $type === 'item' || $type === 'artikel';
-                }));
-
-                $itemNos = [];
-                foreach ($planningLines as $line) {
-                    $itemNo = trim((string) ($line['No'] ?? ''));
-                    if ($itemNo !== '') {
-                        $itemNos[] = $itemNo;
-                    }
-                }
-
-                $itemTaskFlagsMap = fetch_item_task_flags_map($environment, $company, $itemNos, $auth);
-                $splitLines = split_task_article_lines($planningLines, $itemTaskFlagsMap);
-                $taskArticleLines = $splitLines['task'];
-                $planningLines = $splitLines['article'];
-
-                $binLocationMaps = fetch_bin_location_maps($environment, $company, $planningLines, $auth);
-                $planningLines = apply_bin_locations_to_lines($planningLines, $binLocationMaps);
-
-                $selectedWorkOrderRealArticleCount = count($planningLines);
-            }
-        }
-    }
-
-    if ($selectedAssemblyNo !== '') {
-        $selectedAssemblyOrderRow = fetch_single_assembly_row_by_no(
-            $environment,
-            $company,
-            $selectedAssemblyNo,
-            'No,Item_No,Description,Starting_Date,Ending_Date,Remaining_Quantity,Status,Unit_of_Measure_Code',
-            $auth
-        );
-        if (!empty($selectedAssemblyOrderRow)) {
-            $selectedAssemblyOrder = $selectedAssemblyOrderRow;
-            $assemblyLines = fetch_assembly_lines_by_no($environment, $company, $selectedAssemblyNo, $auth);
-            $assemblyDisplayBlocks = build_assembly_display_blocks($assemblyLines);
-            $assemblyIncompleteArtikelKeys = assembly_incomplete_artikel_line_keys($assemblyDisplayBlocks);
-        }
     }
 } catch (Throwable $throwable) {
     $errorMessage = $throwable->getMessage();
@@ -5988,7 +5991,7 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                     <h2 class="title">Vorige werkorders:</h2>
                     <section class="line-list">
                         <?php foreach ($previousWorkOrders as $previousWorkOrder): ?>
-                            <?php $previousWorkOrderHref = 'index.php?' . http_build_query(['company' => $company, 'workorder' => (string) $previousWorkOrder['No']], '', '&', PHP_QUERY_RFC3986); ?>
+                            <?php $previousWorkOrderHref = 'index.php?' . http_build_query(array_merge($listQuery, ['workorder' => (string) $previousWorkOrder['No']]), '', '&', PHP_QUERY_RFC3986); ?>
                             <article class="card">
                                 <div class="row">
                                     <p class="line-name"><a href="<?= htmlspecialchars($previousWorkOrderHref) ?>"><?= bc_text_html((string) $previousWorkOrder['No']) ?></a>
