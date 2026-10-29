@@ -1329,7 +1329,8 @@ function fetch_workorder_material_summary_for_workorders(
     string $environment,
     string $company,
     array $workOrderNos,
-    array $auth
+    array $auth,
+    ?array $prefetchedLines = null
 ): array {
     global $statuses;
 
@@ -1365,19 +1366,24 @@ function fetch_workorder_material_summary_for_workorders(
 
     $allLines = [];
     $itemNos = [];
-    $chunks = array_chunk($uniqueNos, 20);
+    // Detailpagina geeft zijn al opgehaalde planningsregels mee (scheelt een dubbele query).
+    $chunks = $prefetchedLines !== null ? [[]] : array_chunk($uniqueNos, 20);
     foreach ($chunks as $chunkNos) {
-        $filter = build_or_filter('LVS_Work_Order_No', $chunkNos);
-        if ($filter === '') {
-            continue;
+        if ($prefetchedLines !== null) {
+            $rows = $prefetchedLines;
+        } else {
+            $filter = build_or_filter('LVS_Work_Order_No', $chunkNos);
+            if ($filter === '') {
+                continue;
+            }
+
+            $url = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
+                '$select' => 'LVS_Work_Order_No,Type,No,KVT_Status_Material',
+                '$filter' => $filter,
+            ]);
+
+            $rows = odata_get_all($url, $auth, odata_ttl('planning_lines'));
         }
-
-        $url = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
-            '$select' => 'LVS_Work_Order_No,Type,No,KVT_Status_Material',
-            '$filter' => $filter,
-        ]);
-
-        $rows = odata_get_all($url, $auth, odata_ttl('planning_lines'));
         foreach ($rows as $row) {
             $type = strtolower(trim((string) ($row['Type'] ?? '')));
             if ($type !== 'item' && $type !== 'artikel') {
@@ -2061,18 +2067,24 @@ function fetch_previous_workorders(string $environment, string $company, array $
 {
     $workOrderNo = (string) ($current['No'] ?? '');
     $rowsByField = [];
-    foreach (['Component_No', 'Main_Entity'] as $field) {
-        $value = trim((string) ($current[$field] ?? ''));
-        $rowsByField[$field] = [];
-        if ($value === '' || strtoupper($value) === 'UNKNOWN') {
-            continue;
+    // Bij parallel ophalen krijgt deze lookup een eigen, korte limiet: de box mag de pagina niet ophouden.
+    $GLOBALS['DAEDALUS_ODATA_PREFETCH_TIMEOUT'] = 8;
+    try {
+        foreach (['Component_No', 'Main_Entity'] as $field) {
+            $value = trim((string) ($current[$field] ?? ''));
+            $rowsByField[$field] = [];
+            if ($value === '' || strtoupper($value) === 'UNKNOWN') {
+                continue;
+            }
+            // Zonder huidige WO in de filter blijft de cache per component/locatie gedeeld.
+            $url = odata_company_url($environment, $company, 'Werkorders', [
+                '$select' => 'No,Start_Date,Created_Date_Time,Status,Task_Description,Component_No,Component_Description',
+                '$filter' => $field . " eq '" . odata_quote_string($value) . "' and Status ne 'Geannuleerd'",
+            ]);
+            $rowsByField[$field] = odata_get_all($url, $auth, odata_ttl('previous_workorders'));
         }
-        // Zonder huidige WO in de filter blijft de cache per component/locatie gedeeld.
-        $url = odata_company_url($environment, $company, 'Werkorders', [
-            '$select' => 'No,Start_Date,Created_Date_Time,Status,Task_Description,Component_No,Component_Description',
-            '$filter' => $field . " eq '" . odata_quote_string($value) . "' and Status ne 'Geannuleerd'",
-        ]);
-        $rowsByField[$field] = odata_get_all($url, $auth, odata_ttl('previous_workorders'));
+    } finally {
+        unset($GLOBALS['DAEDALUS_ODATA_PREFETCH_TIMEOUT']);
     }
 
     return merge_previous_workorders($rowsByField['Component_No'], $rowsByField['Main_Entity'], trim($workOrderNo));
@@ -3297,6 +3309,19 @@ if ($ajaxAction === 'week_calendar') {
 }
 
 try {
+    $selectedUrl = odata_company_url($environment, $company, 'AppWerkorders', [
+        '$select' => 'No,Task_Code,Task_Description,Resource_Name,Main_Entity_Description,Component_No,Component_Description,Start_Date,Start_Time,End_Date,End_Time,Job_No,KVT_Memo,KVT_Memo_Internal_Use_Only',
+        '$filter' => "No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
+    ]);
+    // Onafhankelijke queries tegelijk ophalen (via Mímir); de code hieronder leest ze uit het verzoekgeheugen.
+    odata_prefetch(static function () use ($environment, $company, $userEmail, $auth, $selectedWorkOrderNo, $selectedUrl): void {
+        fetch_app_resources_by_email($environment, $company, $userEmail, $auth);
+        fetch_service_resources($environment, $company, $auth);
+        if ($selectedWorkOrderNo !== '') {
+            odata_get_all($selectedUrl, $auth, odata_ttl('workorder_detail'));
+        }
+    });
+
     $resourcesForUser = fetch_app_resources_by_email($environment, $company, $userEmail, $auth);
 
     if (count($resourcesForUser) === 0) {
@@ -3388,14 +3413,28 @@ try {
     }
 
     if ($selectedWorkOrderNo !== '') {
-        $selectedUrl = odata_company_url($environment, $company, 'AppWerkorders', [
-            '$select' => 'No,Task_Code,Task_Description,Resource_Name,Main_Entity_Description,Component_No,Component_Description,Start_Date,Start_Time,End_Date,End_Time,Job_No,KVT_Memo,KVT_Memo_Internal_Use_Only',
-            '$filter' => "No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
-        ]);
         $selectedRows = odata_get_all($selectedUrl, $auth, odata_ttl('workorder_detail'));
         $selectedWorkOrder = $selectedRows[0] ?? null;
 
         if ($selectedWorkOrder !== null) {
+            $revisionLineSelect = 'Line_No,Type,No,Description,Description_2,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Qty_Picked';
+            $standardLineSelect = 'Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Expected_Receipt_Date';
+            $linesUrl = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
+                '$select' => workorder_is_revision($selectedWorkOrder) ? $revisionLineSelect : $standardLineSelect,
+                '$filter' => "LVS_Work_Order_No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
+                '$orderby' => 'Line_No asc',
+            ]);
+            $prefetchWorkOrder = $selectedWorkOrder;
+            odata_prefetch(static function () use ($environment, $company, $auth, $selectedWorkOrderNo, $prefetchWorkOrder, $linesUrl, $workOrderWebfleetStatusLabels): void {
+                if (!isset($workOrderWebfleetStatusLabels[$selectedWorkOrderNo])) {
+                    fetch_webfleet_status_labels_for_workorders($environment, $company, [$selectedWorkOrderNo], $auth);
+                }
+                fetch_werkorder_visit_contact_by_no($environment, $company, $selectedWorkOrderNo, $auth);
+                fetch_component_parking_address_by_no($environment, $company, (string) ($prefetchWorkOrder['Component_No'] ?? ''), $auth);
+                odata_get_all($linesUrl, $auth, odata_ttl('planning_lines'));
+                fetch_previous_workorders($environment, $company, $prefetchWorkOrder, $auth);
+            });
+
             if (isset($workOrderWebfleetStatusLabels[$selectedWorkOrderNo])) {
                 $selectedWorkOrderWebfleetStatusLabel = safe_text((string) $workOrderWebfleetStatusLabels[$selectedWorkOrderNo]);
             } else {
@@ -3418,20 +3457,27 @@ try {
                 $selectedWorkOrderEndTime
             );
 
-            $selectedWorkOrderMaterialSummary = fetch_workorder_material_summary_for_workorders(
-                $environment,
-                $company,
-                [$selectedWorkOrderNo],
-                $auth
-            );
-            $selectedWorkOrderMaterialStatusLabel = safe_text((string) (
-                $selectedWorkOrderMaterialSummary['labels'][$selectedWorkOrderNo] ?? 'Onbekend'
-            ));
-
             $visitContactRow = fetch_werkorder_visit_contact_by_no($environment, $company, $selectedWorkOrderNo, $auth);
             if (!empty($visitContactRow)) {
                 $selectedWorkOrder = array_merge($selectedWorkOrder, $visitContactRow);
             }
+
+            $prefetchWorkOrder = $selectedWorkOrder;
+            odata_prefetch(static function () use ($environment, $company, $auth, $prefetchWorkOrder, $linesUrl): void {
+                fetch_contact_name_by_no($environment, $company, (string) ($prefetchWorkOrder['KVT_Primary_Contact_No'] ?? ''), $auth);
+                fetch_previous_workorders($environment, $company, $prefetchWorkOrder, $auth);
+                if (workorder_is_revision($prefetchWorkOrder)) {
+                    return;
+                }
+                $itemNos = [];
+                foreach (odata_get_all($linesUrl, $auth, odata_ttl('planning_lines')) as $line) {
+                    $type = strtolower(trim((string) ($line['Type'] ?? '')));
+                    if ($type === 'item' || $type === 'artikel') {
+                        $itemNos[] = trim((string) ($line['No'] ?? ''));
+                    }
+                }
+                fetch_item_task_flags_map($environment, $company, $itemNos, $auth);
+            });
 
             $primaryContactNo = trim((string) ($selectedWorkOrder['KVT_Primary_Contact_No'] ?? ''));
             if ($primaryContactNo !== '') {
@@ -3455,15 +3501,21 @@ try {
 
             $selectedWorkOrderIsRevision = workorder_is_revision($selectedWorkOrder);
 
-
-            $revisionLineSelect = 'Line_No,Type,No,Description,Description_2,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Qty_Picked';
-            $standardLineSelect = 'Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Expected_Receipt_Date';
-            $linesUrl = odata_company_url($environment, $company, 'LVS_JobPlanningLinesSub', [
-                '$select' => $selectedWorkOrderIsRevision ? $revisionLineSelect : $standardLineSelect,
-                '$filter' => "LVS_Work_Order_No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
-                '$orderby' => 'Line_No asc',
-            ]);
             $planningLinesAll = odata_get_all($linesUrl, $auth, odata_ttl('planning_lines'));
+
+            $selectedWorkOrderMaterialSummary = fetch_workorder_material_summary_for_workorders(
+                $environment,
+                $company,
+                [$selectedWorkOrderNo],
+                $auth,
+                $selectedWorkOrderIsRevision ? null : array_map(
+                    static fn(array $line): array => $line + ['LVS_Work_Order_No' => $selectedWorkOrderNo],
+                    $planningLinesAll
+                )
+            );
+            $selectedWorkOrderMaterialStatusLabel = safe_text((string) (
+                $selectedWorkOrderMaterialSummary['labels'][$selectedWorkOrderNo] ?? 'Onbekend'
+            ));
 
             if ($selectedWorkOrderIsRevision) {
                 $revisionDisplayLines = array_map(
@@ -3971,6 +4023,10 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
     if (!empty($webfleetStatusFiltersForModal[$webfleetStatusValue])) {
         $activeWebfleetFilters[] = $webfleetStatusValue;
     }
+}
+
+if (!headers_sent() && odata_server_timing_value() !== '') {
+    header('Server-Timing: ' . odata_server_timing_value());
 }
 
 ?>
@@ -7926,3 +7982,4 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
 </body>
 
 </html>
+<!-- Server-Timing: <?= str_replace('--', '-', odata_server_timing_value()) ?> -->
