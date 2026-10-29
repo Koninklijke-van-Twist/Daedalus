@@ -5993,7 +5993,7 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                                 <div class="row">
                                     <p class="line-name"><a href="<?= htmlspecialchars($previousWorkOrderHref) ?>"><?= bc_text_html((string) $previousWorkOrder['No']) ?></a>
                                         · <?= htmlspecialchars(nl_date((string) ($previousWorkOrder['Start_Date'] ?? ''))) ?></p>
-                                    <span class="badge <?= htmlspecialchars(status_css_class((string) ($previousWorkOrder['Status'] ?? ''))) ?>"><?= bc_text_html((string) ($previousWorkOrder['Status'] ?? '')) ?></span>
+                                    <span class="badge <?= is_open_workorder_status((string) ($previousWorkOrder['Status'] ?? '')) ? 'neutral' : 'ok' ?>"><?= bc_text_html((string) ($previousWorkOrder['Status'] ?? '')) ?></span>
                                 </div>
                                 <div class="meta">
                                     <?= bc_text_html((string) ($previousWorkOrder['Task_Description'] ?? '')) ?><br />
