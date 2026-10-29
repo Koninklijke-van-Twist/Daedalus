@@ -80,6 +80,7 @@ $odataTtl = [
     'planning_lines' => $minute * 15,
     'item_task_flags' => $hour,
     'bin_lookup' => $minute * 15,
+    'previous_workorders' => $minute * 15,
 ];
 
 $sessionUserEmail = normalize_email((string) ($_SESSION['user']['email'] ?? ''));
@@ -2056,6 +2057,27 @@ function fetch_single_werkorder_row_by_no(
     );
 }
 
+function fetch_previous_workorders(string $environment, string $company, string $workOrderNo, array $auth): array
+{
+    $current = fetch_single_werkorder_row_by_no($environment, $company, $workOrderNo, 'No,Component_No,Main_Entity', $auth);
+    $rowsByField = [];
+    foreach (['Component_No', 'Main_Entity'] as $field) {
+        $value = trim((string) ($current[$field] ?? ''));
+        $rowsByField[$field] = [];
+        if ($value === '' || strtoupper($value) === 'UNKNOWN') {
+            continue;
+        }
+        // Zonder huidige WO in de filter blijft de cache per component/locatie gedeeld.
+        $url = odata_company_url($environment, $company, 'Werkorders', [
+            '$select' => 'No,Start_Date,Created_Date_Time,Status,Task_Description,Component_No,Component_Description',
+            '$filter' => $field . " eq '" . odata_quote_string($value) . "' and Status ne 'Geannuleerd'",
+        ]);
+        $rowsByField[$field] = odata_get_all($url, $auth, odata_ttl('previous_workorders'));
+    }
+
+    return merge_previous_workorders($rowsByField['Component_No'], $rowsByField['Main_Entity'], trim($workOrderNo));
+}
+
 function fetch_werkorder_no_material_needed_by_no(string $environment, string $company, string $workOrderNo, array $auth): ?bool
 {
     $row = fetch_single_werkorder_row_by_no(
@@ -3087,6 +3109,7 @@ $workOrders = [];
 $assemblyOrders = [];
 $mergedOrderList = [];
 $selectedWorkOrder = null;
+$previousWorkOrders = [];
 $selectedAssemblyOrder = null;
 $assemblyLines = [];
 $assemblyDisplayBlocks = [];
@@ -3801,6 +3824,12 @@ try {
             }
 
             $selectedWorkOrderIsRevision = workorder_is_revision($selectedWorkOrder);
+
+            try {
+                $previousWorkOrders = fetch_previous_workorders($environment, $company, $selectedWorkOrderNo, $auth);
+            } catch (Throwable $exception) {
+                $previousWorkOrders = [];
+            }
 
             $revisionLineSelect = 'Line_No,Type,No,Description,Description_2,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Qty_Picked';
             $standardLineSelect = 'Type,No,Description,KVT_Extended_Text,Quantity,Unit_of_Measure_Code,KVT_Status_Material,Bin_Code,KVT_Expected_Receipt_Date';
@@ -5950,6 +5979,29 @@ foreach ($webfleetStatusCatalog as $webfleetStatusValue) {
                                         <?= bc_text_html($taskExtendedText, '') ?>
                                     </div>
                                 <?php endif; ?>
+                            </article>
+                        <?php endforeach; ?>
+                    </section>
+                <?php endif; ?>
+
+                <?php if (count($previousWorkOrders) > 0): ?>
+                    <h2 class="title">Vorige werkorders:</h2>
+                    <section class="line-list">
+                        <?php foreach ($previousWorkOrders as $previousWorkOrder): ?>
+                            <?php $previousWorkOrderHref = 'index.php?' . http_build_query(['company' => $company, 'workorder' => (string) $previousWorkOrder['No']], '', '&', PHP_QUERY_RFC3986); ?>
+                            <article class="card">
+                                <div class="row">
+                                    <p class="line-name"><a href="<?= htmlspecialchars($previousWorkOrderHref) ?>"><?= bc_text_html((string) $previousWorkOrder['No']) ?></a>
+                                        · <?= htmlspecialchars(nl_date((string) ($previousWorkOrder['Start_Date'] ?? ''))) ?></p>
+                                    <span class="badge <?= htmlspecialchars(status_css_class((string) ($previousWorkOrder['Status'] ?? ''))) ?>"><?= bc_text_html((string) ($previousWorkOrder['Status'] ?? '')) ?></span>
+                                </div>
+                                <div class="meta">
+                                    <?= bc_text_html((string) ($previousWorkOrder['Task_Description'] ?? '')) ?><br />
+                                    Component: <a href="<?= get_sharepoint_url($previousWorkOrder) ?>" target="_blank"
+                                        rel="noopener noreferrer">
+                                        <?= bc_text_html((string) ($previousWorkOrder['Component_Description'] ?? '')) ?></a><br />
+                                    Match: <?= $previousWorkOrder['_match'] === 'component' ? 'zelfde component' : 'zelfde locatie' ?>
+                                </div>
                             </article>
                         <?php endforeach; ?>
                     </section>
