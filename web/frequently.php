@@ -25,7 +25,6 @@ require __DIR__ . '/index.php';
 const FREQUENTLY_PARALLEL = 3;
 const FREQUENTLY_REQUEST_TIMEOUT = 60;
 const FREQUENTLY_BUDGET_SECONDS = 470;
-const FREQUENTLY_LOCK_STALE_SECONDS = 900;
 const FREQUENTLY_DETAIL_DAYS = 2;
 const FREQUENTLY_DETAIL_MAX = 150;
 const FREQUENTLY_RESOURCE_BATCH = 6;
@@ -200,29 +199,25 @@ function frequently_write_state(array $state): void
 }
 
 /**
- * Pakt de lock; een lock van een vastgelopen run (ouder dan FREQUENTLY_LOCK_STALE_SECONDS) wordt vervangen.
+ * Pakt de lock. Alleen flock telt: houdt een proces hem nog vast, dan loopt die run echt
+ * nog en slaan we over. Stopt een proces (ook bij een crash), dan laat de kernel de flock los.
  *
  * @return resource|false
  */
 function frequently_acquire_lock(string $lockPath)
 {
     $lock = @fopen($lockPath, 'c+');
-    if ($lock !== false && flock($lock, LOCK_EX | LOCK_NB)) {
-        ftruncate($lock, 0);
-        fwrite($lock, (string) time());
-        fflush($lock);
-        return $lock;
-    }
-    $lockedAt = (int) @file_get_contents($lockPath);
-    if ($lock !== false) {
-        fclose($lock);
-    }
-    if ($lockedAt <= 0 || time() - $lockedAt < FREQUENTLY_LOCK_STALE_SECONDS) {
+    if ($lock === false) {
         return false;
     }
-    // Vorige run hangt: nieuw lockbestand (nieuwe inode), de oude flock geldt dan niet meer.
-    @unlink($lockPath);
-    return frequently_acquire_lock($lockPath);
+    if (!flock($lock, LOCK_EX | LOCK_NB)) {
+        fclose($lock);
+        return false;
+    }
+    ftruncate($lock, 0);
+    fwrite($lock, (string) time());
+    fflush($lock);
+    return $lock;
 }
 
 /**

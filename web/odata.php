@@ -1111,9 +1111,42 @@ function odata_prefetch(callable $collect): void
         if (isset($response['value']) && is_array($response['value'])) {
             $normalized = odata_normalize_text_newlines_recursive($response['value']);
             $memo['rows'][$key] = is_array($normalized) ? $normalized : [];
+            odata_local_cache_put($pending[$key][0], $memo['rows'][$key]);
         }
     }
     curl_multi_close($multi);
+}
+
+/**
+ * Lokale cache vóór Mímir (alleen webverzoeken): per URL een bestand in cache/odata.
+ * Vers genoeg (jonger dan de ttl van de aanroeper) = direct terug, anders Mímir.
+ * Schrijven via tmp + rename: de oude versie blijft leesbaar tot de nieuwe compleet is.
+ */
+function odata_local_cache_path(string $url): string
+{
+    return cache_path_for_key('local|' . $url);
+}
+
+function odata_local_cache_get(string $url, int $ttlSeconds): ?array
+{
+    $raw = @file_get_contents(odata_local_cache_path($url));
+    $payload = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
+    if (!is_array($payload) || !is_array($payload['data'] ?? null)) {
+        return null;
+    }
+    $age = time() - (int) ($payload['_meta']['cached_at'] ?? 0);
+    return $age >= 0 && $age < ($ttlSeconds > 0 ? $ttlSeconds : 3600) ? $payload['data'] : null;
+}
+
+function odata_local_cache_put(string $url, array $rows): void
+{
+    $path = odata_local_cache_path($url);
+    $tmp = $path . '.' . getmypid() . '.' . mt_rand() . '.tmp';
+    // expires_at alleen voor de opruiming; elke lezer kijkt zelf naar cached_at.
+    $json = json_encode(['_meta' => ['cached_at' => time(), 'expires_at' => time() + 86400, 'source_url' => $url], 'data' => $rows], JSON_UNESCAPED_UNICODE);
+    if ($json !== false && @file_put_contents($tmp, $json) !== false && !@rename($tmp, $path)) {
+        @unlink($tmp);
+    }
 }
 
 function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
@@ -1126,6 +1159,11 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
         $memoKey = $ttlSeconds . '|' . $url;
         if (isset($memo['rows'][$memoKey])) {
             return $memo['rows'][$memoKey];
+        }
+        $local = odata_local_cache_get($url, $ttlSeconds);
+        if ($local !== null) {
+            $memo['rows'][$memoKey] = $local;
+            return $local;
         }
         if ($memo['collect'] !== null) {
             $memo['collect'][$memoKey] = [
@@ -1142,6 +1180,7 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
         } finally {
             odata_timing_record($url, $startedAt);
         }
+        odata_local_cache_put($url, $rows);
         $memo['rows'][$memoKey] = $rows;
         return $rows;
     }

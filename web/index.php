@@ -2083,7 +2083,10 @@ function fetch_previous_workorders(string $environment, string $company, array $
     $workOrderNo = (string) ($current['No'] ?? '');
     $rowsByField = [];
     // Bij parallel ophalen krijgt deze lookup een eigen, korte limiet: de box mag de pagina niet ophouden.
-    $GLOBALS['DAEDALUS_ODATA_PREFETCH_TIMEOUT'] = 8;
+    // Opwarmen (frequently.php) zonder die limiet, anders komt deze query nooit in de cache.
+    if (empty($GLOBALS['DAEDALUS_WARM_MAX_AGE'])) {
+        $GLOBALS['DAEDALUS_ODATA_PREFETCH_TIMEOUT'] = 8;
+    }
     try {
         foreach (['Component_No', 'Main_Entity'] as $field) {
             $value = trim((string) ($current[$field] ?? ''));
