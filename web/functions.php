@@ -707,3 +707,28 @@ function merge_previous_workorders(array $componentRows, array $locationRows, st
 
     return array_values($result);
 }
+
+/**
+ * Andere monteurs op een werkorder uit de planningsregels (Type Resource): uniek op No,
+ * zonder hoofdmonteur en pseudo-resources (niet-numeriek, bv. M-WORKSHOP).
+ * Naam: resourcelijst (No => ['Name' => …]), terugval Description, terugval No.
+ */
+function workorder_involved_colleagues(array $lines, string $mainResourceNo, array $resourceMap): array
+{
+    $result = [];
+    $mainResourceNo = trim($mainResourceNo);
+    foreach ($lines as $line) {
+        $type = strtolower(trim((string) ($line['Type'] ?? '')));
+        $no = trim((string) ($line['No'] ?? ''));
+        if ($type !== 'resource' || $no === '' || !ctype_digit($no) || $no === $mainResourceNo || isset($result[$no])) {
+            continue;
+        }
+        $name = trim((string) ($resourceMap[$no]['Name'] ?? ''));
+        if ($name === '') {
+            $name = trim((string) ($line['Description'] ?? ''));
+        }
+        $result[$no] = $name !== '' ? $name : $no;
+    }
+
+    return $result;
+}

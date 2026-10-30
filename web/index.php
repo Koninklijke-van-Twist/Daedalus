@@ -3182,6 +3182,7 @@ $selectedWorkOrderPrimaryContactName = '';
 $selectedWorkOrderVisitAddress = '';
 $taskArticleLines = [];
 $planningLines = [];
+$selectedWorkOrderColleagues = [];
 $availableWorkorderStatuses = [];
 $workOrderStatusCounts = [];
 $disabledFilterExtraRows = [];
@@ -3354,7 +3355,7 @@ if ($ajaxAction === 'week_calendar') {
 
 try {
     $selectedUrl = odata_company_url($environment, $company, 'AppWerkorders', [
-        '$select' => 'No,Task_Code,Task_Description,Resource_Name,Main_Entity_Description,Component_No,Component_Description,Start_Date,Start_Time,End_Date,End_Time,Job_No,KVT_Memo,KVT_Memo_Internal_Use_Only',
+        '$select' => 'No,Task_Code,Task_Description,Resource_No,Resource_Name,Main_Entity_Description,Component_No,Component_Description,Start_Date,Start_Time,End_Date,End_Time,Job_No,KVT_Memo,KVT_Memo_Internal_Use_Only',
         '$filter' => "No eq '" . odata_quote_string($selectedWorkOrderNo) . "'",
     ]);
     // Onafhankelijke queries tegelijk ophalen (via Mímir); de code hieronder leest ze uit het verzoekgeheugen.
@@ -3560,6 +3561,11 @@ try {
             $selectedWorkOrderIsRevision = workorder_is_revision($selectedWorkOrder);
 
             $planningLinesAll = odata_get_all($linesUrl, $auth, odata_ttl('planning_lines'));
+            $selectedWorkOrderColleagues = workorder_involved_colleagues(
+                $planningLinesAll,
+                (string) ($selectedWorkOrder['Resource_No'] ?? ''),
+                $serviceResourceMap
+            );
 
             $selectedWorkOrderMaterialSummary = fetch_workorder_material_summary_for_workorders(
                 $environment,
@@ -6071,6 +6077,13 @@ if (!headers_sent() && odata_server_timing_value() !== '') {
                             <b>Bezoekadres</b>:<br />
                             <?= bc_text_html($visitAddressText) ?><br />
                         <?php endif; ?>
+                        <br />
+                    <?php endif; ?>
+                    <?php if (!empty($selectedWorkOrderColleagues)): ?>
+                        <b>Betrokken collega's</b>:<br />
+                        <?php foreach ($selectedWorkOrderColleagues as $colleagueName): ?>
+                            <?= bc_text_html((string) $colleagueName) ?><br />
+                        <?php endforeach; ?>
                         <br />
                     <?php endif; ?>
                     <?php
