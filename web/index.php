@@ -2095,7 +2095,9 @@ function fetch_previous_workorders(string $environment, string $company, array $
                 continue;
             }
             // Zonder huidige WO in de filter blijft de cache per component/locatie gedeeld.
-            $url = odata_company_url($environment, $company, 'Werkorders', [
+            // AppWerkorders: zelfde velden, maar in BC veel sneller per rij dan Werkorders
+            // (Main_Entity 502 rijen: 10,2 s i.p.v. 17,5 s). Dubbele No's vangt merge_previous_workorders af.
+            $url = odata_company_url($environment, $company, 'AppWerkorders', [
                 '$select' => 'No,Start_Date,Created_Date_Time,Status,Task_Description,Component_No,Component_Description',
                 '$filter' => $field . " eq '" . odata_quote_string($value) . "' and Status ne 'Geannuleerd'",
             ]);
