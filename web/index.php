@@ -73,14 +73,14 @@ $odataTtl = [
     'workorders_counts' => $hour,
     'werkorders_material_flags' => $hour,
     'workorders_list' => $hour,
-    'workorder_detail' => $minute * 15,
+    'workorder_detail' => $minute * 30,
     'assembly_orders_list' => $hour,
-    'assembly_order_detail' => $minute * 15,
-    'assembly_lines' => $minute * 15,
-    'planning_lines' => $minute * 15,
+    'assembly_order_detail' => $minute * 30,
+    'assembly_lines' => $minute * 30,
+    'planning_lines' => $minute * 30,
     'item_task_flags' => $hour,
-    'bin_lookup' => $minute * 15,
-    'previous_workorders' => $minute * 15,
+    'bin_lookup' => $minute * 30,
+    'previous_workorders' => $minute * 30,
 ];
 
 $sessionUserEmail = normalize_email((string) ($_SESSION['user']['email'] ?? ''));
@@ -5278,6 +5278,12 @@ if (!headers_sent() && odata_server_timing_value() !== '') {
             font-weight: 700;
         }
 
+        .week-calendar-event-no {
+            display: block;
+            font-weight: 700;
+            font-size: .72rem;
+        }
+
         .week-calendar-event-title {
             display: block;
             font-weight: 600;
@@ -5421,7 +5427,7 @@ if (!headers_sent() && odata_server_timing_value() !== '') {
             background: rgba(242, 245, 249, 0.96);
             display: none;
             place-items: center;
-            z-index: 4000;
+            z-index: 4500; /* boven de weekkalender-modal (4400) */
         }
 
         .page-loader.visible {
@@ -7057,6 +7063,14 @@ if (!headers_sent() && odata_server_timing_value() !== '') {
                     eventEl.appendChild(timeEl);
                 }
 
+                if (workOrder.no)
+                {
+                    const noEl = document.createElement('span');
+                    noEl.className = 'week-calendar-event-no';
+                    noEl.textContent = workOrder.no;
+                    eventEl.appendChild(noEl);
+                }
+
                 const titleEl = document.createElement('span');
                 titleEl.className = 'week-calendar-event-title';
                 titleEl.textContent = titleText;
@@ -7671,7 +7685,15 @@ if (!headers_sent() && odata_server_timing_value() !== '') {
                         return;
                     }
 
+                    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+                    {
+                        return;
+                    }
+
+                    // Expliciet navigeren (mobiel: tik op blokje moet altijd naar de werkorder).
+                    event.preventDefault();
                     showLoader();
+                    window.location.href = linkEl.href;
                 });
 
                 weekCalendarBodyEl.addEventListener('touchstart', function (event)
