@@ -1983,6 +1983,9 @@ function fetch_workorder_open_counts(string $environment, string $company, array
 
     // Per 20 monteurs: kleinere BC-verzoeken die parallel lopen en elk apart in de cache komen
     // (alle 144 KvT-monteurs in één $filter haalde de 60 s niet).
+    // Vaste 1-uurs TTL, ook bij opwarmen (geen afkapping op 540 s): anders wordt alle historie elke run opnieuw opgehaald.
+    global $odataTtl;
+    $ttl = (int) ($odataTtl['workorders_counts'] ?? 3600);
     $urls = [];
     foreach (array_chunk(array_keys($result), 20) as $chunk) {
         $urls[] = odata_company_url($environment, $company, 'AppWerkorders', [
@@ -1991,15 +1994,15 @@ function fetch_workorder_open_counts(string $environment, string $company, array
         ]);
     }
     if (function_exists('odata_prefetch')) {
-        odata_prefetch(static function () use ($urls, $auth): void {
+        odata_prefetch(static function () use ($urls, $auth, $ttl): void {
             foreach ($urls as $url) {
-                odata_get_all($url, $auth, odata_ttl('workorders_counts'));
+                odata_get_all($url, $auth, $ttl);
             }
         });
     }
     $rows = [];
     foreach ($urls as $url) {
-        $rows = array_merge($rows, odata_get_all($url, $auth, odata_ttl('workorders_counts')));
+        $rows = array_merge($rows, odata_get_all($url, $auth, $ttl));
     }
     foreach ($rows as $row) {
         $resourceNo = trim((string) ($row['Resource_No'] ?? ''));

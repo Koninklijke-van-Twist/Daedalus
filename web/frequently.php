@@ -257,6 +257,7 @@ $resumeOffset = (int) ($state['offset'] ?? 0);
 $summary = ['success' => true, 'finished' => false, 'recorded_at' => date('c'), 'max_age' => 540, 'weeks' => $weeks, 'companies' => []];
 frequently_write_progress($summary, $startedAt);
 $companyCount = count($companyList);
+$countsQueries = [];
 for ($step = 0; $step < $companyCount; $step++) {
     $company = $companyList[($startIndex + $step) % $companyCount];
     $offset = $step === 0 ? $resumeOffset : 0;
@@ -291,7 +292,7 @@ for ($step = 0; $step < $companyCount; $step++) {
                 }
             }
             if ($allNos !== []) {
-                $queries[] = ['ajax' => 'resource_counts', 'company' => $company, 'resource_nos' => $allNos];
+                $countsQueries[] = ['ajax' => 'resource_counts', 'company' => $company, 'resource_nos' => $allNos];
             }
         }
         $pages = frequently_fetch_pages($queries, $deadline);
@@ -342,6 +343,12 @@ for ($step = 0; $step < $companyCount; $step++) {
     if (empty($companySummary['done'])) {
         break;
     }
+}
+// Aantallen pas aan het eind: deze trage fetch mag de pagina's/weekkalenders niet laten falen.
+if ($countsQueries !== []) {
+    $stepAt = microtime(true);
+    $pages = frequently_fetch_pages($countsQueries, microtime(true) + FREQUENTLY_REQUEST_TIMEOUT + 5);
+    $summary['counts'] = ['ok' => $pages['ok'], 'failed' => $pages['failed'], 'seconds' => round(microtime(true) - $stepAt, 1)];
 }
 $summary['finished'] = true;
 $summary['duration_seconds'] = round(microtime(true) - $startedAt, 1);
