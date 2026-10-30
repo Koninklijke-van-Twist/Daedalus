@@ -28,6 +28,7 @@ $statuses = [
     "T" => "Te laat", //inkooporder is (net) te laat
     "I" => "Inkooporder aanwezig", //Inkooporder is er en is op tijd
     "V" => "Voorraad", //Is gereserveerd in voorraad
+    "M" => "Magazijnpick", //In behandeling in magazijn
     "G" => "Gepicked", //Zijn uitgezocht en in de juiste bak gelegd
     "B" => "Uitgegeven", //De blauwe bak is vanuit magazijn uitgegeven aan de service engineer
     "A" => "Aangenomen", //Aangenomen door Service Engineer en gecontroleerd
@@ -1083,7 +1084,7 @@ function workorder_material_badge_class(string $status): string
         return 'ok';
     }
 
-    if (in_array($code, ['X', 'T', 'I'], true)) {
+    if (in_array($code, ['X', 'T', 'I', 'M'], true)) {
         return 'warn';
     }
 
@@ -1493,6 +1494,8 @@ function material_line_status(array $line): array
         }
     } elseif (in_array($statusCode, ['A', 'C'], true)) {
         $detail = 'Uitgegeven aan monteur';
+    } elseif ($statusCode === 'M') {
+        $detail = 'In behandeling in magazijn';
     } elseif ($statusCode === 'O') {
         $detail = '';
     } elseif (in_array($statusCode, ['N', 'X', 'T', 'I'], true)) {

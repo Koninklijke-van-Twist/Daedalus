@@ -36,6 +36,7 @@ $statusLabels = [
     'T' => 'Te laat',
     'I' => 'Inkooporder aanwezig',
     'V' => 'Voorraad',
+    'M' => 'Magazijnpick',
     'G' => 'Gepicked',
     'B' => 'Uitgegeven',
     'A' => 'Aangenomen',
@@ -403,7 +404,7 @@ function workorder_material_badge_class(string $status): string
         return 'ok';
     }
 
-    if (in_array($code, ['X', 'T', 'I'], true)) {
+    if (in_array($code, ['X', 'T', 'I', 'M'], true)) {
         return 'warn';
     }
 
