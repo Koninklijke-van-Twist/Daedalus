@@ -22,7 +22,8 @@ require __DIR__ . '/index.php';
  */
 const FREQUENTLY_PARALLEL = 3;
 const FREQUENTLY_REQUEST_TIMEOUT = 180;
-const FREQUENTLY_BUDGET_SECONDS = 480;
+const FREQUENTLY_BUDGET_SECONDS = 470;
+const FREQUENTLY_LOCK_STALE_SECONDS = 900;
 const FREQUENTLY_DETAIL_DAYS = 2;
 const FREQUENTLY_DETAIL_MAX = 150;
 
@@ -60,7 +61,8 @@ function frequently_fetch_pages(array $queries, float $deadline): array
     $total = count($queries);
     while ($next < $total || $active !== []) {
         while ($next < $total && count($active) < FREQUENTLY_PARALLEL) {
-            if (microtime(true) >= $deadline) {
+            $remaining = (int) floor($deadline - microtime(true));
+            if ($remaining < 1) {
                 $result['skipped'] += $total - $next;
                 $next = $total;
                 break;
@@ -70,7 +72,7 @@ function frequently_fetch_pages(array $queries, float $deadline): array
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_CONNECTTIMEOUT => 5,
-                CURLOPT_TIMEOUT => FREQUENTLY_REQUEST_TIMEOUT,
+                CURLOPT_TIMEOUT => min(FREQUENTLY_REQUEST_TIMEOUT, $remaining),
             ]);
             curl_multi_add_handle($multi, $ch);
             $active[(int) $ch] = [$ch, $next];
@@ -99,14 +101,51 @@ function frequently_fetch_pages(array $queries, float $deadline): array
 }
 
 /**
+ * Schrijft de (tussen)stand naar cache/frequently-last.json, zodat de voortgang ook na een kill zichtbaar is.
+ */
+function frequently_write_progress(array $summary, float $startedAt): void
+{
+    $summary['duration_seconds'] = round(microtime(true) - $startedAt, 1);
+    $path = __DIR__ . '/cache/frequently-last.json';
+    @file_put_contents($path . '.tmp', json_encode($summary, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+    @rename($path . '.tmp', $path);
+}
+
+/**
+ * Pakt de lock; een lock van een vastgelopen run (ouder dan FREQUENTLY_LOCK_STALE_SECONDS) wordt vervangen.
+ *
+ * @return resource|false
+ */
+function frequently_acquire_lock(string $lockPath)
+{
+    $lock = @fopen($lockPath, 'c+');
+    if ($lock !== false && flock($lock, LOCK_EX | LOCK_NB)) {
+        ftruncate($lock, 0);
+        fwrite($lock, (string) time());
+        fflush($lock);
+        return $lock;
+    }
+    $lockedAt = (int) @file_get_contents($lockPath);
+    if ($lock !== false) {
+        fclose($lock);
+    }
+    if ($lockedAt <= 0 || time() - $lockedAt < FREQUENTLY_LOCK_STALE_SECONDS) {
+        return false;
+    }
+    // Vorige run hangt: nieuw lockbestand (nieuwe inode), de oude flock geldt dan niet meer.
+    @unlink($lockPath);
+    return frequently_acquire_lock($lockPath);
+}
+
+/**
  * Page load
  */
 $startedAt = microtime(true);
 $deadline = $startedAt + FREQUENTLY_BUDGET_SECONDS;
 $lockPath = __DIR__ . '/cache/frequently.lock';
 @mkdir(dirname($lockPath), 0775, true);
-$lock = @fopen($lockPath, 'c');
-if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
+$lock = frequently_acquire_lock($lockPath);
+if ($lock === false) {
     echo json_encode(['success' => true, 'skipped' => 'vorige run loopt nog'], JSON_UNESCAPED_UNICODE);
     exit;
 }
@@ -119,19 +158,37 @@ for ($offset = 0; $offset < FREQUENTLY_DETAIL_DAYS; $offset++) {
     $detailDays[$today->modify('+' . $offset . ' days')->format('Y-m-d')] = true;
 }
 
-$summary = ['success' => true, 'recorded_at' => date('c'), 'max_age' => 540, 'companies' => []];
+$summary = ['success' => true, 'finished' => false, 'recorded_at' => date('c'), 'max_age' => 540, 'companies' => []];
+frequently_write_progress($summary, $startedAt);
 foreach ($companies as $company) {
-    $companySummary = ['resources' => 0, 'pages' => 0, 'failed' => 0, 'skipped' => 0, 'details' => 0];
+    $companySummary = ['resources' => 0, 'pages' => 0, 'failed' => 0, 'skipped' => 0, 'details' => 0, 'timing' => []];
+    if (microtime(true) >= $deadline - 5) {
+        $companySummary['error'] = 'budget op';
+        $summary['companies'][$company] = $companySummary;
+        continue;
+    }
     try {
         odata_mimir_circuit_reset();
+        $stepAt = microtime(true);
+        // Monteurs ophalen met limiet = resterend budget (bij time-out leeg, geen BC-fallback die blijft hangen).
+        $GLOBALS['DAEDALUS_ODATA_PREFETCH_TIMEOUT'] = max(1, (int) floor($deadline - 5 - microtime(true)));
+        try {
+            odata_prefetch(static function () use ($environment, $company, $auth): void {
+                fetch_service_resources($environment, (string) $company, $auth);
+            });
+        } finally {
+            unset($GLOBALS['DAEDALUS_ODATA_PREFETCH_TIMEOUT']);
+        }
         $resourceNos = [];
-        foreach (fetch_service_resources($environment, (string) $company, $auth) as $resource) {
+        $serviceResources = microtime(true) < $deadline - 5 ? fetch_service_resources($environment, (string) $company, $auth) : [];
+        foreach ($serviceResources as $resource) {
             $no = trim((string) ($resource['No'] ?? ''));
             if ($no !== '' && !is_all_resources_selection($no)) {
                 $resourceNos[] = $no;
             }
         }
         $companySummary['resources'] = count($resourceNos);
+        $companySummary['timing']['monteurs_s'] = round(microtime(true) - $stepAt, 1);
         if ($resourceNos === []) {
             $summary['companies'][$company] = $companySummary;
             continue;
@@ -147,7 +204,11 @@ foreach ($companies as $company) {
                 $queries[] = ['ajax' => 'week_calendar', 'company' => $company, 'person' => $resourceNo, 'week' => $week];
             }
         }
+        $stepAt = microtime(true);
         $pages = frequently_fetch_pages($queries, $deadline);
+        $companySummary['timing']['lijst_kalender_s'] = round(microtime(true) - $stepAt, 1);
+        $summary['companies'][$company] = $companySummary + ['pages' => $pages['ok'], 'failed' => $pages['failed'], 'skipped' => $pages['skipped']];
+        frequently_write_progress($summary, $startedAt);
 
         // Details van werkorders die vandaag/morgen in een kalender staan.
         $detailNos = [];
@@ -169,7 +230,9 @@ foreach ($companies as $company) {
         foreach (array_slice(array_keys($detailNos), 0, FREQUENTLY_DETAIL_MAX) as $no) {
             $detailQueries[] = ['company' => $company, 'workorder' => $no];
         }
+        $stepAt = microtime(true);
         $details = frequently_fetch_pages($detailQueries, $deadline);
+        $companySummary['timing']['details_s'] = round(microtime(true) - $stepAt, 1);
 
         $companySummary['pages'] = $pages['ok'] + $details['ok'];
         $companySummary['failed'] = $pages['failed'] + $details['failed'];
@@ -180,8 +243,11 @@ foreach ($companies as $company) {
         $companySummary['error'] = $exception->getMessage();
     }
     $summary['companies'][$company] = $companySummary;
+    frequently_write_progress($summary, $startedAt);
 }
+$summary['finished'] = true;
 $summary['duration_seconds'] = round(microtime(true) - $startedAt, 1);
+frequently_write_progress($summary, $startedAt);
 
 flock($lock, LOCK_UN);
 fclose($lock);
