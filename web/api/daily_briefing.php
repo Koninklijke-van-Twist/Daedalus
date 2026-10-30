@@ -1,4 +1,6 @@
 <?php
+// Achtergrondscript: Mímir-verzoeken zonder "interactive" (lange slotwacht).
+defined('DAEDALUS_MIMIR_BACKGROUND') || define('DAEDALUS_MIMIR_BACKGROUND', true);
 /**
  * Read-only endpoint voor de Copilot-MVP "aandachtspunten uit eerdere bezoekrapporten".
  *

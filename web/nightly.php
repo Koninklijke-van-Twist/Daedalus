@@ -1,4 +1,6 @@
 <?php
+// Achtergrondscript: Mímir-verzoeken zonder "interactive" (lange slotwacht).
+defined('DAEDALUS_MIMIR_BACKGROUND') || define('DAEDALUS_MIMIR_BACKGROUND', true);
 /**
  * Nightly endpoint (GET), door de server rond middernacht vanaf localhost aangeroepen.
  * Ververst de Zoek Klant-cache (onderhoudscontracten) voor elk bedrijf.

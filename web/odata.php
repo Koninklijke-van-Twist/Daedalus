@@ -805,6 +805,16 @@ function odata_mimir_company_environment_map(?string $environment = null): array
 }
 
 /**
+ * Webpagina/AJAX: Mímir mag kort (~10 s) op een BC-slot wachten en geeft dan 503,
+ * waarna we direct naar BC terugvallen. CLI en achtergrondscripts
+ * (DAEDALUS_MIMIR_BACKGROUND, bijv. nightly.php) houden de lange wachttijd.
+ */
+function odata_mimir_is_interactive(): bool
+{
+    return PHP_SAPI !== 'cli' && !defined('DAEDALUS_MIMIR_BACKGROUND');
+}
+
+/**
  * @param array<string, mixed> $odataQuery
  */
 function odata_mimir_query_body(string $company, string $table, array $odataQuery, int $ttlSeconds): array
@@ -815,6 +825,9 @@ function odata_mimir_query_body(string $company, string $table, array $odataQuer
         'max_age' => max(0, $ttlSeconds),
         'top' => 0,
     ];
+    if (odata_mimir_is_interactive()) {
+        $body['interactive'] = true;
+    }
 
     $select = trim((string) ($odataQuery['$select'] ?? $odataQuery['select'] ?? ''));
     if ($select !== '') {
