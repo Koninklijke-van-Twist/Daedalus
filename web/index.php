@@ -3318,7 +3318,14 @@ try {
         fetch_app_resources_by_email($environment, $company, $userEmail, $auth);
         fetch_service_resources($environment, $company, $auth);
         if ($selectedWorkOrderNo !== '') {
-            odata_get_all($selectedUrl, $auth, odata_ttl('workorder_detail'));
+            // Eigen korte Mímir-limiet; bij time-out één directe BC-retry zonder circuitbreaker.
+            $GLOBALS['DAEDALUS_ODATA_PREFETCH_TIMEOUT'] = 15;
+            $GLOBALS['DAEDALUS_ODATA_PREFETCH_DIRECT_RETRY'] = true;
+            try {
+                odata_get_all($selectedUrl, $auth, odata_ttl('workorder_detail'));
+            } finally {
+                unset($GLOBALS['DAEDALUS_ODATA_PREFETCH_TIMEOUT'], $GLOBALS['DAEDALUS_ODATA_PREFETCH_DIRECT_RETRY']);
+            }
         }
     });
 

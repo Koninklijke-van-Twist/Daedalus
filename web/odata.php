@@ -1072,6 +1072,17 @@ function odata_prefetch(callable $collect): void
         curl_multi_remove_handle($multi, $ch);
         $failed = $raw === false || $code < 200 || $code >= 300;
         odata_timing_record($pending[$key][0], microtime(true) - $totalTime, $failed ? 'parallel mislukt' : 'parallel');
+        if ($failed && ($pending[$key][3] ?? null) !== null) {
+            // Kritieke lookup met korte limiet: circuitbreaker niet laten springen, één keer direct naar BC.
+            curl_close($ch);
+            $retryStartedAt = microtime(true);
+            try {
+                $memo['rows'][$key] = odata_get_all_direct_for_url($pending[$key][0], $pending[$key][3], (int) $pending[$key][1]);
+            } catch (Throwable $exception) {
+            }
+            odata_timing_record($pending[$key][0], $retryStartedAt, 'BC-retry');
+            continue;
+        }
         if ($failed && $pending[$key][2] !== null) {
             // Query met eigen tijdslimiet (bijv. vorige werkorders): leeg laten i.p.v. de pagina op te houden
             // of de Mímir-circuitbreaker voor de rest van de pagina te laten springen.
@@ -1104,7 +1115,12 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
             return $memo['rows'][$memoKey];
         }
         if ($memo['collect'] !== null) {
-            $memo['collect'][$memoKey] = [$url, $ttlSeconds, $GLOBALS['DAEDALUS_ODATA_PREFETCH_TIMEOUT'] ?? null];
+            $memo['collect'][$memoKey] = [
+                $url,
+                $ttlSeconds,
+                $GLOBALS['DAEDALUS_ODATA_PREFETCH_TIMEOUT'] ?? null,
+                !empty($GLOBALS['DAEDALUS_ODATA_PREFETCH_DIRECT_RETRY']) ? $auth : null,
+            ];
             return [];
         }
         $startedAt = microtime(true);
@@ -1131,25 +1147,30 @@ function odata_get_all_uncached(string $url, array $auth, int $ttlSeconds): arra
                 return is_array($normalized) ? $normalized : [];
             },
             static function () use ($url, $auth, $ttlSeconds): array {
-                $directUrl = odata_bc_url_from_odata_url($url);
-                $directAuth = odata_bc_auth_for_request(
-                    odata_env_from_odata_url($directUrl),
-                    odata_company_from_odata_url($directUrl),
-                    $auth
-                );
-                if ($directAuth === null) {
-                    $previous = odata_mimir_last_error();
-                    if ($previous instanceof Throwable) {
-                        throw $previous;
-                    }
-                    throw new Exception('Mímir mislukt.');
-                }
-                return odata_get_all_direct($directUrl, $directAuth, $ttlSeconds);
+                return odata_get_all_direct_for_url($url, $auth, $ttlSeconds);
             }
         );
     }
 
     return odata_get_all_direct($url, $auth, $ttlSeconds);
+}
+
+function odata_get_all_direct_for_url(string $url, array $auth, int $ttlSeconds): array
+{
+    $directUrl = odata_bc_url_from_odata_url($url);
+    $directAuth = odata_bc_auth_for_request(
+        odata_env_from_odata_url($directUrl),
+        odata_company_from_odata_url($directUrl),
+        $auth
+    );
+    if ($directAuth === null) {
+        $previous = odata_mimir_last_error();
+        if ($previous instanceof Throwable) {
+            throw $previous;
+        }
+        throw new Exception('Mímir mislukt.');
+    }
+    return odata_get_all_direct($directUrl, $directAuth, $ttlSeconds);
 }
 
 function odata_get_all_direct(string $url, array $auth, $ttlSeconds = 300): array
