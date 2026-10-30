@@ -5275,13 +5275,13 @@ if (!headers_sent() && odata_server_timing_value() !== '') {
 
         .week-calendar-event-time {
             display: block;
-            font-weight: 700;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .week-calendar-event-no {
-            display: block;
             font-weight: 700;
-            font-size: .72rem;
         }
 
         .week-calendar-event-title {
@@ -7055,20 +7055,22 @@ if (!headers_sent() && odata_server_timing_value() !== '') {
                 const objectText = (workOrder.object || '').toString();
                 eventEl.title = [timeText, titleText, objectText, workOrder.no].filter(Boolean).join(' · ');
 
-                if (timeText !== '')
+                if (workOrder.no || timeText !== '')
                 {
                     const timeEl = document.createElement('span');
                     timeEl.className = 'week-calendar-event-time';
-                    timeEl.textContent = timeText;
+                    if (workOrder.no)
+                    {
+                        const noEl = document.createElement('strong');
+                        noEl.className = 'week-calendar-event-no';
+                        noEl.textContent = workOrder.no;
+                        timeEl.appendChild(noEl);
+                    }
+                    if (timeText !== '')
+                    {
+                        timeEl.appendChild(document.createTextNode((workOrder.no ? ' · ' : '') + timeText));
+                    }
                     eventEl.appendChild(timeEl);
-                }
-
-                if (workOrder.no)
-                {
-                    const noEl = document.createElement('span');
-                    noEl.className = 'week-calendar-event-no';
-                    noEl.textContent = workOrder.no;
-                    eventEl.appendChild(noEl);
                 }
 
                 const titleEl = document.createElement('span');
