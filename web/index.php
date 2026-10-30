@@ -1978,17 +1978,26 @@ function fetch_workorder_open_counts(string $environment, string $company, array
         return $result;
     }
 
-    $filter = build_or_filter('Resource_No', array_keys($result));
-    if ($filter === '') {
-        return $result;
+    // Per 20 monteurs: kleinere BC-verzoeken die parallel lopen en elk apart in de cache komen
+    // (alle 144 KvT-monteurs in één $filter haalde de 60 s niet).
+    $urls = [];
+    foreach (array_chunk(array_keys($result), 20) as $chunk) {
+        $urls[] = odata_company_url($environment, $company, 'AppWerkorders', [
+            '$select' => 'Resource_No,Status',
+            '$filter' => build_or_filter('Resource_No', $chunk),
+        ]);
     }
-
-    $url = odata_company_url($environment, $company, 'AppWerkorders', [
-        '$select' => 'Resource_No,Status',
-        '$filter' => $filter,
-    ]);
-
-    $rows = odata_get_all($url, $auth, odata_ttl('workorders_counts'));
+    if (function_exists('odata_prefetch')) {
+        odata_prefetch(static function () use ($urls, $auth): void {
+            foreach ($urls as $url) {
+                odata_get_all($url, $auth, odata_ttl('workorders_counts'));
+            }
+        });
+    }
+    $rows = [];
+    foreach ($urls as $url) {
+        $rows = array_merge($rows, odata_get_all($url, $auth, odata_ttl('workorders_counts')));
+    }
     foreach ($rows as $row) {
         $resourceNo = trim((string) ($row['Resource_No'] ?? ''));
         if ($resourceNo === '' || !isset($result[$resourceNo])) {
