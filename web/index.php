@@ -10,6 +10,9 @@ $daedalusWarmRequest = ($_GET['daedalus_warm'] ?? '') === '1' && is_trusted_requ
 if ($daedalusWarmRequest) {
     defined('DAEDALUS_MIMIR_BACKGROUND') || define('DAEDALUS_MIMIR_BACKGROUND', true);
     $GLOBALS['DAEDALUS_WARM_MAX_AGE'] = 540;
+    // Afgebroken opwarmverzoeken niet laten doorlopen (frequently.php wacht max. 60 s per verzoek).
+    ignore_user_abort(false);
+    @set_time_limit(65);
 }
 require_once __DIR__ . '/functions.php';
 require_once __DIR__ . "/odata.php";
