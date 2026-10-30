@@ -547,8 +547,18 @@ function workorder_rows_overlapping(array $rows, string $rangeStart, string $ran
  */
 function workorder_fetch_overlapping(string $rangeStart, string $rangeEnd, callable $fetchFilter): array
 {
+    $filters = workorder_odata_overlap_filters($rangeStart, $rangeEnd);
+    if (function_exists('odata_prefetch')) {
+        // Beide overlap-queries tegelijk ophalen (via Mímir); de lus hieronder leest ze uit het verzoekgeheugen.
+        odata_prefetch(static function () use ($filters, $fetchFilter): void {
+            foreach ($filters as $filter) {
+                $fetchFilter($filter);
+            }
+        });
+    }
+
     $batches = [];
-    foreach (workorder_odata_overlap_filters($rangeStart, $rangeEnd) as $filter) {
+    foreach ($filters as $filter) {
         $batch = $fetchFilter($filter);
         $batches[] = is_array($batch) ? $batch : [];
     }
