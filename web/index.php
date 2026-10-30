@@ -4,6 +4,13 @@
  */
 require __DIR__ . "/auth.php";
 require_once __DIR__ . "/logincheck.php";
+// frequently.php warmt de caches via localhost-GET met daedalus_warm=1: dan als achtergrond
+// (lange Mímir-slotwacht, geen "interactive") en een korte max_age zodat de cache vers blijft.
+$daedalusWarmRequest = ($_GET['daedalus_warm'] ?? '') === '1' && is_trusted_requester();
+if ($daedalusWarmRequest) {
+    defined('DAEDALUS_MIMIR_BACKGROUND') || define('DAEDALUS_MIMIR_BACKGROUND', true);
+    $GLOBALS['DAEDALUS_WARM_MAX_AGE'] = 540;
+}
 require_once __DIR__ . '/functions.php';
 require_once __DIR__ . "/odata.php";
 require_once __DIR__ . '/lib/option_matches.php';
@@ -448,7 +455,9 @@ function odata_ttl(string $key, int $fallback = 120): int
 {
     global $odataTtl;
     $value = (int) ($odataTtl[$key] ?? $fallback);
-    return $value > 0 ? $value : $fallback;
+    $value = $value > 0 ? $value : $fallback;
+    $warmMaxAge = (int) ($GLOBALS['DAEDALUS_WARM_MAX_AGE'] ?? 0);
+    return $warmMaxAge > 0 ? min($value, $warmMaxAge) : $value;
 }
 
 function parse_date_ymd(string $value): ?DateTimeImmutable
@@ -3073,6 +3082,11 @@ function assembly_resource_description_html(array $line): string
     return implode('<br/>', $parts);
 }
 
+// frequently.php gebruikt alleen de functies hierboven.
+if (defined('DAEDALUS_INDEX_LIB_ONLY')) {
+    return;
+}
+
 /**
  * Page load
  */
@@ -3162,7 +3176,7 @@ if ($hasWebfleetStatusFiltersRequest && $webfleetStatusFiltersRequest !== '') {
     }
 }
 
-if ($selectedWorkOrderNo === '' && $selectedAssemblyNo === '' && $ajaxAction === '') {
+if ($selectedWorkOrderNo === '' && $selectedAssemblyNo === '' && $ajaxAction === '' && !$daedalusWarmRequest) {
     write_user_status_filters_payload(
         user_status_filters_path($statusFilterOwnerEmail),
         $userStatusFilters,
@@ -3199,7 +3213,7 @@ if (in_companies($requestedCompany, $companies)) {
     $company = '';
 }
 
-if ($userEmail !== '') {
+if ($userEmail !== '' && !$daedalusWarmRequest) {
     set_user_company_preference($userEmail, $company);
 }
 
