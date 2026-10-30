@@ -4,6 +4,13 @@
  */
 require __DIR__ . "/auth.php";
 require_once __DIR__ . "/logincheck.php";
+// frequently.php warmt de caches via localhost-GET met daedalus_warm=1: dan als achtergrond
+// (lange Mímir-slotwacht, geen "interactive") en een korte max_age zodat de cache vers blijft.
+$daedalusWarmRequest = ($_GET['daedalus_warm'] ?? '') === '1' && is_trusted_requester();
+if ($daedalusWarmRequest) {
+    defined('DAEDALUS_MIMIR_BACKGROUND') || define('DAEDALUS_MIMIR_BACKGROUND', true);
+    $GLOBALS['DAEDALUS_WARM_MAX_AGE'] = 540;
+}
 require_once __DIR__ . '/functions.php';
 require_once __DIR__ . "/odata.php";
 require_once __DIR__ . '/lib/option_matches.php';
@@ -448,7 +455,9 @@ function odata_ttl(string $key, int $fallback = 120): int
 {
     global $odataTtl;
     $value = (int) ($odataTtl[$key] ?? $fallback);
-    return $value > 0 ? $value : $fallback;
+    $value = $value > 0 ? $value : $fallback;
+    $warmMaxAge = (int) ($GLOBALS['DAEDALUS_WARM_MAX_AGE'] ?? 0);
+    return $warmMaxAge > 0 ? min($value, $warmMaxAge) : $value;
 }
 
 function parse_date_ymd(string $value): ?DateTimeImmutable
@@ -729,6 +738,9 @@ function build_week_calendar_payload(
     array $hrefBaseQuery
 ): array {
     $today = (new DateTimeImmutable('today'))->format('Y-m-d');
+    odata_prefetch(static function () use ($environment, $company, $resourceNo, $weekStart, $weekEnd, $auth): void {
+        fetch_app_workorders_chunked($environment, $company, $resourceNo, $weekStart, $weekEnd, $auth);
+    });
     $workOrders = fetch_app_workorders_chunked(
         $environment,
         $company,
@@ -3073,6 +3085,11 @@ function assembly_resource_description_html(array $line): string
     return implode('<br/>', $parts);
 }
 
+// frequently.php gebruikt alleen de functies hierboven.
+if (defined('DAEDALUS_INDEX_LIB_ONLY')) {
+    return;
+}
+
 /**
  * Page load
  */
@@ -3162,7 +3179,7 @@ if ($hasWebfleetStatusFiltersRequest && $webfleetStatusFiltersRequest !== '') {
     }
 }
 
-if ($selectedWorkOrderNo === '' && $selectedAssemblyNo === '' && $ajaxAction === '') {
+if ($selectedWorkOrderNo === '' && $selectedAssemblyNo === '' && $ajaxAction === '' && !$daedalusWarmRequest) {
     write_user_status_filters_payload(
         user_status_filters_path($statusFilterOwnerEmail),
         $userStatusFilters,
@@ -3199,7 +3216,7 @@ if (in_companies($requestedCompany, $companies)) {
     $company = '';
 }
 
-if ($userEmail !== '') {
+if ($userEmail !== '' && !$daedalusWarmRequest) {
     set_user_company_preference($userEmail, $company);
 }
 
@@ -3286,19 +3303,23 @@ if ($ajaxAction === 'week_calendar') {
     }
 
     try {
-        echo json_encode(
-            build_week_calendar_payload(
-                $environment,
-                $company,
-                $calendarResourceNo,
-                $weekStart,
-                $weekEnd,
-                $auth,
-                $hrefBaseQuery
-            ),
-            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+        $calendarPayload = build_week_calendar_payload(
+            $environment,
+            $company,
+            $calendarResourceNo,
+            $weekStart,
+            $weekEnd,
+            $auth,
+            $hrefBaseQuery
         );
+        if (!headers_sent() && odata_server_timing_value() !== '') {
+            header('Server-Timing: ' . odata_server_timing_value());
+        }
+        echo json_encode($calendarPayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     } catch (Throwable $throwable) {
+        if (!headers_sent() && odata_server_timing_value() !== '') {
+            header('Server-Timing: ' . odata_server_timing_value());
+        }
         http_response_code(500);
         echo json_encode([
             'ok' => false,
@@ -3436,7 +3457,14 @@ try {
                 if (!isset($workOrderWebfleetStatusLabels[$selectedWorkOrderNo])) {
                     fetch_webfleet_status_labels_for_workorders($environment, $company, [$selectedWorkOrderNo], $auth);
                 }
-                fetch_werkorder_visit_contact_by_no($environment, $company, $selectedWorkOrderNo, $auth);
+                // Zelfde behandeling als de AppWerkorders-lookup: 15 s Mímir, dan één directe BC-retry.
+                $GLOBALS['DAEDALUS_ODATA_PREFETCH_TIMEOUT'] = 15;
+                $GLOBALS['DAEDALUS_ODATA_PREFETCH_DIRECT_RETRY'] = true;
+                try {
+                    fetch_werkorder_visit_contact_by_no($environment, $company, $selectedWorkOrderNo, $auth);
+                } finally {
+                    unset($GLOBALS['DAEDALUS_ODATA_PREFETCH_TIMEOUT'], $GLOBALS['DAEDALUS_ODATA_PREFETCH_DIRECT_RETRY']);
+                }
                 fetch_component_parking_address_by_no($environment, $company, (string) ($prefetchWorkOrder['Component_No'] ?? ''), $auth);
                 odata_get_all($linesUrl, $auth, odata_ttl('planning_lines'));
                 fetch_previous_workorders($environment, $company, $prefetchWorkOrder, $auth);
@@ -3623,6 +3651,11 @@ try {
                 }
             }
         } else {
+            // Alle weekchunks (werkorders + assemblage) tegelijk via Mímir i.p.v. één voor één.
+            odata_prefetch(static function () use ($environment, $company, $selectedResourceNo, $rangeStart, $rangeEnd, $auth): void {
+                fetch_app_workorders_chunked($environment, $company, $selectedResourceNo, $rangeStart, $rangeEnd, $auth);
+                fetch_assembly_orders_chunked($environment, $company, $selectedResourceNo, $rangeStart, $rangeEnd, $auth);
+            });
             $workOrders = fetch_app_workorders_chunked(
                 $environment,
                 $company,
@@ -3645,6 +3678,11 @@ try {
             static fn(array $workOrder): string => trim((string) ($workOrder['No'] ?? '')),
             $workOrders
         );
+        // Webfleet- en materiaalchunks (elk per 20 werkorders) tegelijk ophalen.
+        odata_prefetch(static function () use ($environment, $company, $workOrderNosForWebfleet, $auth): void {
+            fetch_webfleet_status_labels_for_workorders($environment, $company, $workOrderNosForWebfleet, $auth);
+            fetch_workorder_material_summary_for_workorders($environment, $company, $workOrderNosForWebfleet, $auth);
+        });
         $workOrderWebfleetStatusLabels = fetch_webfleet_status_labels_for_workorders(
             $environment,
             $company,
