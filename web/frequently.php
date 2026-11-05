@@ -11,7 +11,26 @@ defined('DAEDALUS_MIMIR_BACKGROUND') || define('DAEDALUS_MIMIR_BACKGROUND', true
  * Werkt door de echte pagina's van index.php via localhost op te vragen met daedalus_warm=1.
  * Zo zijn de querystrings ($select/$filter) exact gelijk aan die van een live page view en
  * serveert Mímir die daarna uit de exacte filterdekking. Max_age bij opwarmen: 540 s.
+ *
+ * Nachtvenster: tussen FREQUENTLY_NACHTVENSTER_START en _END (Europe/Amsterdam, einde exclusief)
+ * geen BC/Mímir-calls — BC heeft rond 02:40 locks op Projectplanningsregel. Alleen deze warmup;
+ * nightly.php en de UI gaan gewoon door. Optioneel override via auth.php:
+ * $frequentlyNachtvensterStart / $frequentlyNachtvensterEnd (HH:MM).
  */
+
+require_once __DIR__ . '/lib/frequently_nachtvenster.php';
+
+// Vóór index.php: die doet al company-discovery (Mímir/BC). auth.php alleen voor optionele override.
+if (is_readable(__DIR__ . '/auth.php')) {
+    require __DIR__ . '/auth.php';
+}
+if (frequently_in_nachtvenster()) {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    http_response_code(200);
+    echo json_encode(['success' => true, 'skipped' => 'nachtvenster'], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 
 /**
  * Includes en requires
