@@ -71,3 +71,9 @@ $allowedUsers = [
 // $briefingNotesBudgetSeconds = 20;   // max. SharePoint-tijd per dagmail-run
 // $briefingPdftotextPath      = '/usr/bin/pdftotext'; // pdf-fallback; standaard automatisch gezocht
 // $briefingCompanies          = ['Koninklijke van Twist', 'Hunter van Twist', 'KVT Gas'];
+
+// --- frequently.php nachtvenster (optioneel) ---
+// Warmup slaat BC/Mímir over in [start, end) Europe/Amsterdam (default 01:45–03:00).
+// Alleen frequently.php; nightly.php en de UI niet. Leeg/ongeldig = default in frequently.php.
+// $frequentlyNachtvensterStart = '01:45'; // inclusief
+// $frequentlyNachtvensterEnd   = '03:00'; // exclusief
